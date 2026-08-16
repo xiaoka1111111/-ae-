@@ -4,16 +4,14 @@ setlocal
 set MSVC=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207
 set SDK10=C:\Program Files (x86)\Windows Kits\10
 set SDKVER=10.0.26100.0
-rem ↓ 修改为你的 After Effects SDK Examples 路径
 set AEBASE=D:\work\AI\work\AESDK\out\ae25.6_61.64bit.AfterEffectsSDK\Examples
 
 set PATH=%MSVC%\bin\Hostx64\x64;%SDK10%\bin\%SDKVER%\x64;%PATH%
 set INCLUDE=%MSVC%\include;%SDK10%\Include\%SDKVER%\ucrt;%SDK10%\Include\%SDKVER%\um;%SDK10%\Include\%SDKVER%\shared;%SDK10%\Include\%SDKVER%\winrt;%AEBASE%\Headers;%AEBASE%\Headers\SP;%AEBASE%\Headers\Win;%AEBASE%\Resources;%AEBASE%\Util
 set LIB=%MSVC%\lib\x64;%SDK10%\Lib\%SDKVER%\ucrt\x64;%SDK10%\Lib\%SDKVER%\um\x64
 
-rem 相对本脚本目录
-set SRC=%~dp0
-set OUT=%~dp0build
+set OUT=D:\work\AI\work\FillingEffect\build
+set SRC=D:\work\AI\work\FillingEffect
 if not exist "%OUT%" mkdir "%OUT%"
 
 echo [1/4] Compile plugin shell...

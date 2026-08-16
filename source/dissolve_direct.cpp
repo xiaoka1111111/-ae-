@@ -483,16 +483,23 @@ void renderPresetDirect(const DirectFrame& fr, int w, int h,
             } else if (isGradient && nS > 0) {
                 // 渐变取色 = 波前位置 nd (shader: float w = nd);
                 //   gradientMode==2 → 窗口内时间位置 (p01−lo)/(hi−lo)
+                // 修正 [2026-08-17]: 预设数据中 stops 的 pos 可能乱序 —
+                //   按 pos 排序后再查找 (与 GPU 上传前排序一致), 否则取色错段。
+                PresetColorStop sorted[12];
+                for (int s = 0; s < nS; s++) sorted[s] = L.stops[s];
+                for (int a = 0; a < nS; a++)
+                    for (int b = a + 1; b < nS; b++)
+                        if (sorted[b].pos < sorted[a].pos) std::swap(sorted[a], sorted[b]);
                 float pos = ndv;
                 if (L.gradientMode == 2) {
                     float span = (hi - lo);
                     pos = span > 0.f ? std::min(std::max((p01 - lo) / span, 0.f), 1.f) : 0.f;
                 }
-                const PresetColorStop* s0 = &L.stops[0];
-                const PresetColorStop* s1 = &L.stops[0];
+                const PresetColorStop* s0 = &sorted[0];
+                const PresetColorStop* s1 = &sorted[0];
                 for (int si = 1; si < nS; si++) {
-                    if (pos <= L.stops[si].pos) { s0 = &L.stops[si-1]; s1 = &L.stops[si]; break; }
-                    if (si == nS - 1) { s0 = &L.stops[si]; s1 = &L.stops[si]; }
+                    if (pos <= sorted[si].pos) { s0 = &sorted[si-1]; s1 = &sorted[si]; break; }
+                    if (si == nS - 1) { s0 = &sorted[si]; s1 = &sorted[si]; }
                 }
                 float span = s1->pos - s0->pos;
                 float t = span > 0 ? std::min(std::max((pos - s0->pos) / span, 0.f), 1.f) : 0.f;

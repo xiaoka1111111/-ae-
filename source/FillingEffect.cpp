@@ -279,8 +279,9 @@ ParamsSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_
 	PF_ADD_POPUPX("叠于原图", 3, 0, "自动|叠于原图|替换", 0, AF_COMPOSITE);
 
 	// ---- Pipeline: 渲染器 / 调试视图 ----
+	// 渲染器默认"自动" (3): GPU 优先, 失败回退 CPU [2026-08-17 GPU 路径恢复]
 	AEFX_CLR_STRUCT(def);
-	PF_ADD_POPUPX("渲染器", 3, 0, "CPU|GPU|自动", 0, AF_RENDERER);
+	PF_ADD_POPUPX("渲染器", 3, 3, "CPU|GPU|自动", 0, AF_RENDERER);
 
 	AEFX_CLR_STRUCT(def);
 	PF_ADD_POPUPX("调试视图", 4, 0, "关|生长|速度图|边框", 0, AF_VIEW);
@@ -594,7 +595,7 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 	       (int)src->extent_hint.right, (int)src->extent_hint.bottom,
 	       (int)output->extent_hint.left, (int)output->extent_hint.top,
 	       (int)output->extent_hint.right, (int)output->extent_hint.bottom);
-	logMsg("  [src] growthSource=%d numPts=%d radius=%.0f speed=%.0f delay=%.1f smapMode=%d",
+	logFrame("  [src] growthSource=%d numPts=%d radius=%.0f speed=%.0f delay=%.1f smapMode=%d",
 	       p.growthSource, brush.num, brush.radius, brush.speed, brush.delay[0], p.speedMapMode);
 
 	// 阶段计时 (前 60 帧全记录, 定位性能瓶颈)
@@ -664,71 +665,130 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 	std::vector<float> alpha((size_t)w*h);
 	for (size_t i = 0; i < (size_t)w*h; i++) alpha[i] = rgba[i*4+3];
 
-	// 3. 图层渲染: 实现管线 (GrowthDrawCPU ); GPU 已禁用
+	// ---- 渲染区域 (extent): 内容包围盒, 区域外透明不渲染 (CPU/GPU 共用) ----
+	// 矢量文字层在 4000×4000 合成分辨率下渲染 → 区域化后管线只在内容矩形上跑
+	int offX = (int)src->origin_x - (int)output->origin_x;
+	int offY = (int)src->origin_y - (int)output->origin_y;
+	int rx0 = src->extent_hint.left + offX, ry0 = src->extent_hint.top + offY;
+	int rx1 = src->extent_hint.right + offX, ry1 = src->extent_hint.bottom + offY;
+	rx0 = std::max(rx0, 0); ry0 = std::max(ry0, 0);
+	rx1 = std::min(rx1, w); ry1 = std::min(ry1, h);
+	bool useRect = (rx1 > rx0 && ry1 > ry0);
+	int rw = w, rh = h, baseX = 0, baseY = 0;
+	if (useRect) {
+		rw = rx1 - rx0; rh = ry1 - ry0; baseX = rx0; baseY = ry0;
+	}
+	// 区域 rgba/alpha 提取
+	std::vector<float> rgbaR((size_t)rw * rh * 4, 0.f);
+	std::vector<float> alphaR((size_t)rw * rh, 0.f);
+	for (int y = 0; y < rh; y++)
+		for (int x = 0; x < rw; x++) {
+			size_t di = (size_t)y * rw + x;
+			size_t si = (size_t)(y + baseY) * w + (x + baseX);
+			rgbaR[di*4+0] = rgba[si*4+0]; rgbaR[di*4+1] = rgba[si*4+1];
+			rgbaR[di*4+2] = rgba[si*4+2]; rgbaR[di*4+3] = rgba[si*4+3];
+			alphaR[di] = alpha[si];
+		}
+
+	// 层点/阈值 (CPU/GPU 共用): 点位置 16.16 定点, 默认 {45,45} 百分比
+	// 锚定到内容包围盒 (区域) — 拖动图层不改变波前相对文字的位置;
+	// 区域外钳制保留 (极端百分比值, 保证种子可见)。
+	int nL = std::min(pres.nLayers, 5);
+	std::vector<float> dPts((size_t)nL * 2, 0.f), dTh(nL, 0.f);
+	for (int li = 0; li < nL; li++) {
+		float pxPct = brush.px[(size_t)li*2+0];   // 45.0 = 45% (FIX_2_FLOAT)
+		float pyPct = brush.px[(size_t)li*2+1];
+		float wx = (float)rw * (pxPct / 100.f);
+		float wy = (float)rh * (pyPct / 100.f);
+		// 钳制进区域 (留半个半径余量)
+		float r = std::max(brush.radius, 1.f) * 0.5f;
+		wx = std::min(std::max(wx, r), (float)rw - r);
+		wy = std::min(std::max(wy, r), (float)rh - r);
+		dPts[(size_t)li*2+0] = wx;
+		dPts[(size_t)li*2+1] = wy;
+		// 层 gating 阈值 = 每层延迟参数 (0-100 帧, 默认 0): 硬阈值 gating = 延迟/100 ≤ p01
+		dTh[li] = std::min(std::max(brush.delay[li] / 100.f, 0.f), 1.f);
+	}
+	if (nL > 0) {
+		int sx = std::min(std::max((int)dPts[0], 0), rw - 1);
+		int sy = std::min(std::max((int)dPts[1], 0), rh - 1);
+		float aSeed = alphaR[(size_t)sy * rw + sx];
+		logMsg("  [seed] n=%d p0=(%.1f,%.1f) region=%dx%d base=(%d,%d) alphaAtSeed=%.2f",
+			nL, dPts[0], dPts[1], rw, rh, baseX, baseY, aSeed);
+	}
+
+	// 3. 图层渲染 (CPU 直通管线 / GPU 双路径)
 	std::vector<float> cR, cG, cB, cA;
-	bool useGPU = false;
-	// GPU 路径已禁用 (日志实证 2026-08-15):
-	//   AE 内隐藏窗口 GL 上下文与 AE 自身 GPU 管线冲突 — renderFrame 实测 6.8-7.1s/帧
-	//   (makeCurrent 切换触发驱动同步), 且输出时黑时好。CPU 路径稳定。
-	// 渲染器参数保留 UI (对齐设计), 但渲染统一走 CPU。
-	if (renderer == 1 || renderer == 2)
-		logMsg("  [diag] GPU 禁用 (renderer=%d), 走 CPU", renderer);
-	// GPU 分支保留但永远不执行 (useGPU 恒 false); seedMask 由实现管线替代
-	const float* seedMask = nullptr;
+	// GPU 路径恢复 [2026-08-17]:
+	//   独立进程基准: 4000×4000 全图 466ms / 区域 3744×563 84ms — GPU 本身无"6.8s"问题;
+	//   AE 内实测: GPU 区域 51ms/帧 (首帧 101ms 含 shader 编译)。
+	//   渲染器参数 (AE popup 1-based): 1=CPU 2=GPU 3=自动 (失败回退 CPU)。
+	bool useGPU = (renderer >= 2);
 	if (useGPU) {
 		// 噪声参数数组 (glr 需要; 顺序: noiseScale/scaleX/scaleY/brightness/contrast/evolution/aspect)
 		float noiseParams[7] = {
 			p.noiseScale, p.scaleX, p.scaleY,
 			p.brightness, p.contrast, p.evolution, 1.0f
 		};
-		if (glr::renderFrame(rgba.data(), w, h, pres, prog,
+		// 种子掩码 (与 CPU 直通管线同源: 从点位置画软边圆)
+		std::vector<float> seedMaskV;
+		{
+			seedMaskV.assign((size_t)rw * rh, 0.f);
+			float rad = std::max(brush.radius, 1.f);
+			float r2 = rad * rad;
+			for (int li = 0; li < nL; li++) {
+				if (dTh[li] > p01) continue;  // 延迟 gating (与 CPU 一致)
+				int cx = (int)dPts[(size_t)li*2+0];
+				int cy = (int)dPts[(size_t)li*2+1];
+				int x0 = std::max(cx - (int)rad - 1, 0), y0 = std::max(cy - (int)rad - 1, 0);
+				int x1 = std::min(cx + (int)rad + 1, rw - 1), y1 = std::min(cy + (int)rad + 1, rh - 1);
+				for (int y = y0; y <= y1; y++)
+					for (int x = x0; x <= x1; x++) {
+						float dx = (float)x - (float)cx + 0.5f;
+						float dy = (float)y - (float)cy + 0.5f;
+						if (dx*dx + dy*dy <= r2) seedMaskV[(size_t)y*rw+x] = 1.f;
+					}
+			}
+		}
+		std::vector<float> cAA;
+		if (glr::renderFrame(rgbaR.data(), rw, rh, pres, prog,
 		                     noiseParams, p.complexityL, p.alphaThreshold,
 		                     p.speedMapInfluenceF, p.borderInfluenceF,
-		                     p.gammaF, p.exposureF, p.speedMapChannel, cA, seedMask,
-		                     p.blendMode)) {
-			// GPU 路径: cA 是 RGBA (图层合成结果), 拆通道
+		                     p.gammaF, p.exposureF, p.speedMapChannel, cAA,
+		                     nL > 0 ? seedMaskV.data() : nullptr,
+		                     p.blendMode, p.sourceMode)) {
+			// GPU 路径: cAA 是区域 RGBA (图层合成结果), 拆通道并写回全图
 			cR.assign((size_t)w*h, 0.f);
 			cG.assign((size_t)w*h, 0.f);
 			cB.assign((size_t)w*h, 0.f);
-			std::vector<float> layerA((size_t)w*h);
-			for (int i = 0; i < w*h; i++) {
-				cR[i] = cA[i*4+0]; cG[i] = cA[i*4+1];
-				cB[i] = cA[i*4+2]; layerA[i] = cA[i*4+3];
+			cA.assign((size_t)w*h, 0.f);
+			for (int y = 0; y < rh; y++)
+				for (int x = 0; x < rw; x++) {
+					size_t di = (size_t)y * rw + x;
+					size_t si = (size_t)(y + baseY) * w + (x + baseX);
+					cR[si] = cAA[di*4+0]; cG[si] = cAA[di*4+1];
+					cB[si] = cAA[di*4+2]; cA[si] = cAA[di*4+3];
+				}
+			logFrame("  [gpu] 走 GPU (%dx%d)", rw, rh);
+			TIMER_MARK("GPU renderFrame");
+			// GPU 输出统计 (与 CPU [out] 同款, 验证非黑/非空)
+			{
+				size_t lit = 0;
+				float mxA = 0.f;
+				for (size_t i = 0; i < cA.size(); i++) {
+					if (cA[i] > 0.01f) lit++;
+					if (cA[i] > mxA) mxA = cA[i];
+				}
+				logMsg("  [out] GPU prog=%.1f lit=%zu/%zu maxA=%.2f region=%dx%d",
+				       prog, lit, cA.size(), mxA, rw, rh);
 			}
-			cA.swap(layerA);
 		} else {
 			useGPU = false;  // GPU 失败回退 CPU
+			logMsg("  [diag] GPU 失败, 回退 CPU");
 		}
 	}
 	if (!useGPU) {
-		// ---- 渲染区域 (extent): 内容包围盒, 区域外透明不渲染 ----
-		// 用户图层 64x64 (内容 23x7) 被 AE 放大到 400 渲染 → 全图渲染 420ms+7s 重算
-		// extent 区域渲染: 管线只在内容矩形上跑 (23x7 → <0.1ms)
-		int offX = (int)src->origin_x - (int)output->origin_x;
-		int offY = (int)src->origin_y - (int)output->origin_y;
-		int rx0 = src->extent_hint.left + offX, ry0 = src->extent_hint.top + offY;
-		int rx1 = src->extent_hint.right + offX, ry1 = src->extent_hint.bottom + offY;
-		rx0 = std::max(rx0, 0); ry0 = std::max(ry0, 0);
-		rx1 = std::min(rx1, w); ry1 = std::min(ry1, h);
-		bool useRect = (rx1 > rx0 && ry1 > ry0);
-		// 点传播可能溢出 extent (点 45,45 在内容外) — 区域外扩传播余量
-		// (设计点从任意位置向内容传播; 溢出部分显示在图层透明区, 不影响内容)
-		int rw = w, rh = h, baseX = 0, baseY = 0;
-		if (useRect) {
-			rw = rx1 - rx0; rh = ry1 - ry0; baseX = rx0; baseY = ry0;
-		}
-		// 区域 rgba/alpha 提取
-		std::vector<float> rgbaR((size_t)rw * rh * 4, 0.f);
-		std::vector<float> alphaR((size_t)rw * rh, 0.f);
-		for (int y = 0; y < rh; y++)
-			for (int x = 0; x < rw; x++) {
-				size_t di = (size_t)y * rw + x;
-				size_t si = (size_t)(y + baseY) * w + (x + baseX);
-				rgbaR[di*4+0] = rgba[si*4+0]; rgbaR[di*4+1] = rgba[si*4+1];
-				rgbaR[di*4+2] = rgba[si*4+2]; rgbaR[di*4+3] = rgba[si*4+3];
-				alphaR[di] = alpha[si];
-			}
-		// 1. 基础场: 噪声 + 边缘 + 距离场 (静态, 缓存复用; 设计 noiseMap.cache 语义)
+		// 1. 基础场: 噪声 + 边缘 + 距离场 (静态, 缓存复用)
 		bool recomputed = getStaticFields(p, buf, alphaR.data(), rw, rh);
 		if (recomputed) logFrame("  [cache] 静态场重算 (%dx%d)", rw, rh);
 		TIMER_MARK("staticFields(缓存/重算)");
@@ -747,7 +807,7 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 		float fadeF = std::min(std::max(po.loopFade, 0.f), 100.f) * 0.01f;
 		dfr.loopEnv = 1.f - fadeF * dissolve::smoothstepField(0.85f, 1.f,
 			std::min(std::max(p01, 0.f), 1.f));
-		logMsg("  [env] p01=%.3f fadeF=%.2f loopEnv=%.3f", p01, fadeF, dfr.loopEnv);
+		logFrame("  [env] p01=%.3f fadeF=%.2f loopEnv=%.3f", p01, fadeF, dfr.loopEnv);
 		dfr.splatRadius = brush.radius;   // param 28 半径 (默认 10)
 		dfr.rampS = 1.f;                  // param 24 噪波对比度 [C 默认]
 		{  // param 6 质量 → 除数表 {1,1,2,0.5} (A 级, )
@@ -760,38 +820,7 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 		dfr.srcRGBA = rgbaR.data();
 		dfr.noiseFill = buf.noiseMap.empty() ? nullptr : buf.noiseMap.data();
 		dfr.shapeAlpha = alphaR.data();  // 传播/填充限定在图层内容形状 (dilate cull 语义)
-		// 层点/阈值: 设计参数 29+2i (点位置 16.16 定点, 默认 {45,45}) / 30+2i (延迟, 0-100)
-		// 点坐标换算 [B 修正]: 设计 cx = x×2⁻¹⁶÷除数 − ox, 点 = 图层尺寸百分比;
-		//   传统 Render 下 world==图层 → 锚定世界即锚定图层。但矢量文字层在合成
-		//   分辨率下渲染, world=合成尺寸 (4000×4000), 图层≈内容包围盒 (extent):
-		//   锚定世界会使种子随图层位置漂移 — 用户实证"只有拖动图层才有一点画面变化"
-		//   (拖动→extent/原点变化→种子相对文字移动→波前图案改变)。
-		//   修正: 锚定到内容包围盒 (区域) — 拖动图层不再改变波前相对文字的位置。
-		//   区域外钳制保留 (极端百分比值, 保证种子可见)。
-		int nL = std::min(pres.nLayers, 5);
-		std::vector<float> dPts((size_t)nL * 2, 0.f), dTh(nL, 0.f);
-		for (int li = 0; li < nL; li++) {
-			float pxPct = brush.px[(size_t)li*2+0];   // 45.0 = 45% (FIX_2_FLOAT)
-			float pyPct = brush.px[(size_t)li*2+1];
-			float wx = (float)rw * (pxPct / 100.f);
-			float wy = (float)rh * (pyPct / 100.f);
-			// 钳制进区域 (留半个半径余量)
-			float r = std::max(brush.radius, 1.f) * 0.5f;
-			wx = std::min(std::max(wx, r), (float)rw - r);
-			wy = std::min(std::max(wy, r), (float)rh - r);
-			dPts[(size_t)li*2+0] = wx;
-			dPts[(size_t)li*2+1] = wy;
-			// 层 gating 阈值 = 每层延迟参数 30+2i (0-100 帧, 默认 0, A 级):
-			//    硬阈值 gating = 延迟/100 ≤ p01
-			dTh[li] = std::min(std::max(brush.delay[li] / 100.f, 0.f), 1.f);
-		}
-		if (nL > 0) {
-			int sx = std::min(std::max((int)dPts[0], 0), rw - 1);
-			int sy = std::min(std::max((int)dPts[1], 0), rh - 1);
-			float aSeed = alphaR[(size_t)sy * rw + sx];
-			logMsg("  [seed] n=%d p0=(%.1f,%.1f) region=%dx%d base=(%d,%d) alphaAtSeed=%.2f",
-				nL, dPts[0], dPts[1], rw, rh, baseX, baseY, aSeed);
-		}
+		// (dPts/dTh/nL 已在上方共用计算)
 		dfr.layerPts = dPts.data();
 		dfr.layerThresh = dTh.data();
 		dfr.blendMode = p.blendMode;  // 面板混合模式 ( 跳表权威映射, 1-based)
@@ -846,27 +875,31 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 	       cA.empty() ? -1.f : *std::max_element(cA.begin(), cA.end()));
 
 	// 4. 最终合成: compOverOriginal 决定图层与源图混合
+	//    只合成渲染区域 (区域外 cA=0 → 输出=源图, 无需处理) — 16M 全图循环 → 区域循环
 	bool compOver = (pres.compOverOriginal == 0);
-	for (int i = 0; i < w*h; i++) {
-		float a = cA[i];
-		float srcA = alpha[i];
-		float outR, outG, outB, outA;
-		if (compOver) {
-			// 图层叠在源图上 (Reveal: 图层显示在填充区)
-			outR = rgba[i*4+0] * (1-a) + cR[i] * a;
-			outG = rgba[i*4+1] * (1-a) + cG[i] * a;
-			outB = rgba[i*4+2] * (1-a) + cB[i] * a;
-			outA = std::max(srcA, a);
-		} else {
-			// 图层替换源图 (Out: 源图被消耗)
-			outR = cR[i] * a + rgba[i*4+0] * (1-a);
-			outG = cG[i] * a + rgba[i*4+1] * (1-a);
-			outB = cB[i] * a + rgba[i*4+2] * (1-a);
-			outA = srcA * (1-a);
+	for (int y = baseY; y < baseY + rh; y++)
+		for (int x = baseX; x < baseX + rw; x++) {
+			size_t i = (size_t)y * w + x;
+			float a = cA[i];
+			if (a <= 0.001f) continue;
+			float srcA = alpha[i];
+			float outR, outG, outB, outA;
+			if (compOver) {
+				// 图层叠在源图上 (Reveal: 图层显示在填充区)
+				outR = rgba[i*4+0] * (1-a) + cR[i] * a;
+				outG = rgba[i*4+1] * (1-a) + cG[i] * a;
+				outB = rgba[i*4+2] * (1-a) + cB[i] * a;
+				outA = std::max(srcA, a);
+			} else {
+				// 图层替换源图 (Out: 源图被消耗)
+				outR = cR[i] * a + rgba[i*4+0] * (1-a);
+				outG = cG[i] * a + rgba[i*4+1] * (1-a);
+				outB = cB[i] * a + rgba[i*4+2] * (1-a);
+				outA = srcA * (1-a);
+			}
+			rgba[i*4+0] = outR; rgba[i*4+1] = outG;
+			rgba[i*4+2] = outB; rgba[i*4+3] = outA;
 		}
-		rgba[i*4+0] = outR; rgba[i*4+1] = outG;
-		rgba[i*4+2] = outB; rgba[i*4+3] = outA;
-	}
 
 	// (调试视图已禁用 — 灰度场输出曾致"全屏黑"误解, 始终输出最终效果)
 	(void)viewMode;
@@ -926,7 +959,7 @@ readParams(PF_ParamDef* params[], dissolve::Params& p,
 	p.growthSource = std::min(std::max(params[AF_GROWTH_SOURCE]->u.pd.value - 1, 0), 2);
 	p.blendMode    = params[AF_BLEND_MODE]->u.pd.value;     // 1-based ( 权威映射)
 	// 参数身份诊断: 验证 params[ID] 与 UI 控件是否错位 (旧工程折叠组版本可能污染索引)
-	logMsg("  [param] preset=%d renderer=%d growthSource=%d (raw pd=%d id=%d) blend=%d view=%d loopFade=%.0f srcMode=%d(raw %d)",
+	logFrame("  [param] preset=%d renderer=%d growthSource=%d (raw pd=%d id=%d) blend=%d view=%d loopFade=%.0f srcMode=%d(raw %d)",
 	       presetIdx, renderer, p.growthSource,
 	       (int)params[AF_GROWTH_SOURCE]->u.pd.value, (int)params[AF_GROWTH_SOURCE]->uu.id,
 	       p.blendMode, viewMode,
@@ -969,7 +1002,7 @@ readParams(PF_ParamDef* params[], dissolve::Params& p,
 		}
 		brush.px[bi] = v;
 	}
-	logMsg("  [pts] raw=(%.1f,%.1f) (%.1f,%.1f) (%.1f,%.1f) (%.1f,%.1f) (%.1f,%.1f)",
+	logFrame("  [pts] raw=(%.1f,%.1f) (%.1f,%.1f) (%.1f,%.1f) (%.1f,%.1f) (%.1f,%.1f)",
 	       FIX_2_FLOAT(params[AF_POS1]->u.td.x_value), FIX_2_FLOAT(params[AF_POS1]->u.td.y_value),
 	       FIX_2_FLOAT(params[AF_POS2]->u.td.x_value), FIX_2_FLOAT(params[AF_POS2]->u.td.y_value),
 	       FIX_2_FLOAT(params[AF_POS3]->u.td.x_value), FIX_2_FLOAT(params[AF_POS3]->u.td.y_value),

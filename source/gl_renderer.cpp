@@ -41,6 +41,7 @@
 #define GL_TEXTURE1 0x84C1
 #define GL_TEXTURE2 0x84C2
 #define GL_TEXTURE3 0x84C3
+#define GL_TEXTURE4 0x84C4
 #define GL_FRAMEBUFFER 0x8D40
 #define GL_COLOR_ATTACHMENT0 0x8CE0
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
@@ -128,9 +129,9 @@ static void glLog(const char* fmt, ...) {
     if (g_logFn) g_logFn(buf);
 }
 
-static unsigned g_progNoise = 0, g_progSobel = 0, g_progJFA = 0, g_progLayers = 0;
+static unsigned g_progNoise = 0, g_progSobel = 0, g_progJFA = 0, g_progLayers = 0, g_progNorm = 0;
 static unsigned g_vao = 0, g_vbo = 0;
-static unsigned g_texAlpha = 0, g_texNoise = 0, g_texJFA[2] = {0,0}, g_texDist = 0, g_texSrc = 0, g_texOut = 0, g_texEdge = 0;
+static unsigned g_texAlpha = 0, g_texNoise = 0, g_texJFA[2] = {0,0}, g_texDist = 0, g_texSrc = 0, g_texOut = 0, g_texEdge = 0, g_texSeed = 0;
 static unsigned g_fbo = 0;
 static int g_texW = 0, g_texH = 0;
 
@@ -279,6 +280,7 @@ static bool ensureResources(int w, int h) {
         pglDeleteTextures(1, &g_texSrc);
         pglDeleteTextures(1, &g_texOut);
         pglDeleteTextures(1, &g_texEdge);
+        pglDeleteTextures(1, &g_texSeed);
     }
     mkTex(g_texAlpha, w, h);
     mkTex(g_texNoise, w, h);
@@ -288,6 +290,7 @@ static bool ensureResources(int w, int h) {
     mkTexRGBA(g_texSrc, w, h);
     mkTexRGBA(g_texOut, w, h);
     mkTex(g_texEdge, w, h);
+    mkTex(g_texSeed, w, h);
     if (!g_fbo) pglGenFramebuffers(1, &g_fbo);
     if (!g_vao) {
         pglGenVertexArrays(1, &g_vao);
@@ -327,12 +330,14 @@ static bool initLocked() {
     g_progSobel = compileProgram(kVSFullscreen, kSobelFS);
     g_progJFA = compileProgram(kVSFullscreen, kJFAFS);
     g_progLayers = compileProgram(kVSFullscreen, kLayersFS);
-    if (!g_progNoise || !g_progSobel || !g_progJFA || !g_progLayers) {
+    g_progNorm = compileProgram(kVSFullscreen, kNormFS);
+    if (!g_progNoise || !g_progSobel || !g_progJFA || !g_progLayers || !g_progNorm) {
         // 清理部分创建的 shader, 避免泄漏
         if (g_progNoise) { pglDeleteProgram(g_progNoise); g_progNoise = 0; }
         if (g_progSobel) { pglDeleteProgram(g_progSobel); g_progSobel = 0; }
         if (g_progJFA) { pglDeleteProgram(g_progJFA); g_progJFA = 0; }
         if (g_progLayers) { pglDeleteProgram(g_progLayers); g_progLayers = 0; }
+        if (g_progNorm) { pglDeleteProgram(g_progNorm); g_progNorm = 0; }
         glLog("[GL] shader compile fail");
         g_initFailed = true;
         return false;
@@ -372,7 +377,8 @@ bool renderFrame(const float* srcRGBA, int w, int h,
                  int speedMapChannel,
                  std::vector<float>& outRGBA,
                  const float* seedMask,
-                 int blendMode) {
+                 int blendMode,
+                 int sourceMode) {
     std::lock_guard<std::mutex> lk(g_glMutex);
     if (!g_ok && !initLocked()) return false;
     // 防御: 尺寸/指针检查必须在 ensureResources (创建纹理) 之前
@@ -393,9 +399,13 @@ bool renderFrame(const float* srcRGBA, int w, int h,
     // 纹理行序: framebuffer 读回时翻转 Y, 上传时同步翻转行序以保持一致
     // (否则非对称形状的距离场/源图采样会上下颠倒)
     std::vector<float> alpha((size_t)w*h);
+    std::vector<float> shapeA((size_t)w*h);  // 形状 alpha 副本 (mn/mx 统计用, 不被读回覆盖)
     for (int y = 0; y < h; y++)
-        for (int x = 0; x < w; x++)
-            alpha[(size_t)y*w+x] = srcRGBA[((size_t)(h-1-y)*w+x)*4+3];
+        for (int x = 0; x < w; x++) {
+            size_t i = (size_t)y*w+x;
+            alpha[i] = srcRGBA[((size_t)(h-1-y)*w+x)*4+3];
+            shapeA[i] = alpha[i];
+        }
     pglBindTexture(GL_TEXTURE_2D, g_texAlpha);
     pglTexImage2D(GL_TEXTURE_2D, 0, (int)GL_R32F, w, h, 0, GL_RED, GL_FLOAT, alpha.data());
     // 源图 RGBA 纹理 (mode=3 原图显现层) — 同样翻转行序
@@ -425,83 +435,111 @@ bool renderFrame(const float* srcRGBA, int w, int h,
     pglUniform1i(U(g_progSobel, "tex"), 0);
     runPass(g_progSobel, g_texEdge);
 
-    // Pass 2: JFA 距离场 (k=0 + 迭代, 末轮解码)
-    int maxStep = std::max(w, h) / 2;
-    pglUseProgram(g_progJFA);
-    pglActiveTexture(GL_TEXTURE0);
-    pglBindTexture(GL_TEXTURE_2D, g_texAlpha);
-    pglUniform1i(U(g_progJFA, "in_tex"), 0);
-    pglUniform2f(U(g_progJFA, "jfa_res"), (float)w, (float)h);
-    pglUniform1f(U(g_progJFA, "alpha_threshold"), alphaThreshold);
-    pglUniform1i(U(g_progJFA, "dfModeL"), 1);
-    pglUniform1i(U(g_progJFA, "lastStepB"), 0);
-    pglUniform1i(U(g_progJFA, "k"), 0);
-    runPass(g_progJFA, g_texJFA[0]);
+    // Pass 2: 边缘距离场 (仅自动选点需要: 找形状内部最深点; 有 seedMask 时跳过)
     int cur = 0, nxt = 1;
-    while (maxStep >= 1) {
-        pglActiveTexture(GL_TEXTURE1);
-        pglBindTexture(GL_TEXTURE_2D, g_texJFA[cur]);
-        pglUniform1i(U(g_progJFA, "jfa_tex"), 1);
-        pglUniform1i(U(g_progJFA, "k"), maxStep);
-        pglUniform1i(U(g_progJFA, "lastStepB"), (maxStep == 1) ? 1 : 0);
-        runPass(g_progJFA, g_texJFA[nxt]);
-        cur ^= 1; nxt ^= 1;
-        maxStep >>= 1;
+    if (!seedMask) {
+        // JFA 起始步长 = 最大 2 的幂 ≤ max(w,h)
+        int maxStep = 1;
+        while ((maxStep << 1) <= std::max(w, h)) maxStep <<= 1;
+        pglUseProgram(g_progJFA);
+        pglActiveTexture(GL_TEXTURE0);
+        pglBindTexture(GL_TEXTURE_2D, g_texAlpha);
+        pglUniform1i(U(g_progJFA, "in_tex"), 0);
+        pglUniform2f(U(g_progJFA, "jfa_res"), (float)w, (float)h);
+        pglUniform1f(U(g_progJFA, "alpha_threshold"), alphaThreshold);
+        pglUniform1i(U(g_progJFA, "dfModeL"), 1);
+        pglUniform1i(U(g_progJFA, "lastStepB"), 0);
+        pglUniform1i(U(g_progJFA, "k"), 0);
+        runPass(g_progJFA, g_texJFA[0]);
+        while (maxStep >= 1) {
+            pglActiveTexture(GL_TEXTURE1);
+            pglBindTexture(GL_TEXTURE_2D, g_texJFA[cur]);
+            pglUniform1i(U(g_progJFA, "jfa_tex"), 1);
+            pglUniform1i(U(g_progJFA, "k"), maxStep);
+            pglUniform1i(U(g_progJFA, "lastStepB"), (maxStep == 1) ? 1 : 0);
+            runPass(g_progJFA, g_texJFA[nxt]);
+            cur ^= 1; nxt ^= 1;
+            maxStep >>= 1;
+        }
     }
-    // 末轮结果在 g_texJFA[cur] (若 maxStep 初始为 1, cur=0) — 边缘距离场读回,
-    // 用于自动选点 (形状内部最深点), 再算"到种子点的传播距离场"上传 g_texDist
-    float maxB = 1.f;  // BFS 最大距离 (softEdge 用, 块外可见)
+    // 全 GPU 距离场 [2026-08-17]: JFA 从种子场直接算传播距离场,
+    // 去掉 CPU BFS 往返 (原实现: 读回边缘距离场 → CPU BFS → 再上传)
+    float maxB = 1.f;  // 传播距离场最大距离 (形状内; 归一化用)
     {
-        pglBindFramebuffer(GL_FRAMEBUFFER, g_fbo);
-        pglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_texJFA[cur], 0);
-        pglViewport(0, 0, w, h);
-        pglReadPixels(0, 0, w, h, GL_RED, GL_FLOAT, alpha.data());  // 复用缓冲
-        // 自动选点: 边缘距离场最大处 (内部最深 = 最大内切圆圆心), 或圆点笔刷多源
-        float bestD = -1.f; int sx = w/2, sy = h/2;
-        std::vector<float> bfs((size_t)w*h, 1e9f);
-        std::vector<int> qx, qy;
+        // 种子掩码: 调用方提供 (圆点笔刷) 或自动选点 (形状内部最深点)
+        std::vector<float> seedV((size_t)w*h, 0.f);
         float alphaTh = std::min(std::max(alphaThreshold, 0.01f), 0.5f);
         if (seedMask) {
-            // 圆点笔刷多源: 掩码>0.05 且形状内的点全部为种子
+            for (size_t i = 0; i < (size_t)w*h; i++)
+                if (seedMask[i] > 0.05f && alpha[i] > alphaTh) seedV[i] = 1.f;
+        } else {
+            // 自动选点: 读回边缘距离场 (上段 JFA 结果在 g_texJFA[cur]) 找最深点
+            pglBindFramebuffer(GL_FRAMEBUFFER, g_fbo);
+            pglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_texJFA[cur], 0);
+            pglViewport(0, 0, w, h);
+            pglReadPixels(0, 0, w, h, GL_RED, GL_FLOAT, alpha.data());  // 复用缓冲
+            float bestD = -1.f; int sx = w/2, sy = h/2;
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++) {
                     size_t i = (size_t)y*w+x;
-                    if (seedMask[i] > 0.05f && alpha[i] > alphaTh) {
-                        bfs[i] = 0.f; qx.push_back(x); qy.push_back(y);
-                    }
+                    float d = alpha[i];
+                    if (d > bestD && shapeA[i] > 0.05f) { bestD = d; sx = x; sy = y; }
                 }
-        } else {
-            for (int y = 0; y < h; y++)
-                for (int x = 0; x < w; x++) {
-                    float d = alpha[(size_t)y*w+x];
-                    if (d > bestD) { bestD = d; sx = x; sy = y; }
-                }
-            bool seedInside = alpha[(size_t)sy*w+sx] > alphaTh;
-            if (seedInside) {
-                bfs[(size_t)sy*w+sx] = 0.f; qx.push_back(sx); qy.push_back(sy);
-            }
+            seedV[(size_t)sy*w+sx] = 1.f;
         }
-        const int dx[8] = {1,-1,0,0,1,1,-1,-1}, dy[8] = {0,0,1,-1,1,-1,1,-1};
-        for (size_t qi = 0; qi < qx.size(); qi++) {
-            int x = qx[qi], y = qy[qi];
-            float d = bfs[(size_t)y*w+x];
-            if (d > maxB) maxB = d;
-            for (int k = 0; k < 8; k++) {
-                int nx = x+dx[k], ny = y+dy[k];
-                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-                size_t ni = (size_t)ny*w+nx;
-                if (bfs[ni] > d + 1.f) {
-                    if (alpha[ni] <= alphaTh) continue;  // 形状外不传播
-                    bfs[ni] = d + 1.f; qx.push_back(nx); qy.push_back(ny);
-                }
-            }
+        // 上传种子纹理
+        pglBindTexture(GL_TEXTURE_2D, g_texSeed);
+        pglTexImage2D(GL_TEXTURE_2D, 0, (int)GL_R32F, w, h, 0, GL_RED, GL_FLOAT, seedV.data());
+
+        // JFA 传播距离场: k=0 从种子纹理 (dfModeL=3), 迭代至 1
+        pglUseProgram(g_progJFA);
+        pglActiveTexture(GL_TEXTURE0);
+        pglBindTexture(GL_TEXTURE_2D, g_texSeed);
+        pglUniform1i(U(g_progJFA, "in_tex"), 0);
+        pglUniform2f(U(g_progJFA, "jfa_res"), (float)w, (float)h);
+        pglUniform1f(U(g_progJFA, "alpha_threshold"), alphaThreshold);
+        pglUniform1i(U(g_progJFA, "dfModeL"), 3);
+        pglUniform1i(U(g_progJFA, "lastStepB"), 0);
+        pglUniform1i(U(g_progJFA, "k"), 0);
+        runPass(g_progJFA, g_texJFA[0]);
+        int pcur = 0, pnxt = 1;
+        // JFA 起始步长 = 最大 2 的幂 ≤ max(w,h) (非 2 幂的起始步会导致覆盖不全)
+        int pstep = 1;
+        while ((pstep << 1) <= std::max(w, h)) pstep <<= 1;
+        while (pstep >= 1) {
+            pglActiveTexture(GL_TEXTURE1);
+            pglBindTexture(GL_TEXTURE_2D, g_texJFA[pcur]);
+            pglUniform1i(U(g_progJFA, "jfa_tex"), 1);
+            pglUniform1i(U(g_progJFA, "k"), pstep);
+            pglUniform1i(U(g_progJFA, "lastStepB"), (pstep == 1) ? 1 : 0);
+            runPass(g_progJFA, g_texJFA[pnxt]);
+            pcur ^= 1; pnxt ^= 1;
+            pstep >>= 1;
         }
-        // 形状外保持 2.0 (shader: nd clamp 到 1, 但 outside=step(1.001, raw) 强制 fill=0)
-        // 否则归一化后形状外 nd=1, 进度 100% 时会被填充 (层色溢出形状边界)
+        // 末轮 = 传播距离场 (切比雪夫, 未归一化) — 读回求 minD/maxD (形状内), 仅此一次小往返
+        pglBindFramebuffer(GL_FRAMEBUFFER, g_fbo);
+        pglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_texJFA[pcur], 0);
+        pglViewport(0, 0, w, h);
+        pglReadPixels(0, 0, w, h, GL_RED, GL_FLOAT, alpha.data());
+        float mn = 1e9f, mx = 1.f;
         for (size_t i = 0; i < (size_t)w*h; i++)
-            bfs[i] = (bfs[i] >= 1e8f) ? 2.0f : std::min(bfs[i] / maxB, 1.f);
-        pglBindTexture(GL_TEXTURE_2D, g_texDist);
-        pglTexImage2D(GL_TEXTURE_2D, 0, (int)GL_R32F, w, h, 0, GL_RED, GL_FLOAT, bfs.data());
+            if (shapeA[i] > 0.05f && alpha[i] < 1e8f) {  // 仅形状内
+                if (alpha[i] < mn) mn = alpha[i];
+                if (alpha[i] > mx) mx = alpha[i];
+            }
+        if (mn > mx) { mn = 0.f; mx = 1.f; }
+        maxB = mx;
+        // 归一化 pass: nd = clamp((dist−minD)/(maxD−minD), 0, 1); 形状外=2.0 (kNormFS)
+        pglUseProgram(g_progNorm);
+        pglActiveTexture(GL_TEXTURE0);
+        pglBindTexture(GL_TEXTURE_2D, g_texJFA[pcur]);
+        pglUniform1i(U(g_progNorm, "dist_tex"), 0);
+        pglActiveTexture(GL_TEXTURE1);
+        pglBindTexture(GL_TEXTURE_2D, g_texAlpha);
+        pglUniform1i(U(g_progNorm, "alpha_tex"), 1);
+        pglUniform1f(U(g_progNorm, "minD"), mn);
+        pglUniform1f(U(g_progNorm, "maxD"), mx);
+        runPass(g_progNorm, g_texDist);
     }
 
     // Pass 3: 图层合成
@@ -518,6 +556,9 @@ bool renderFrame(const float* srcRGBA, int w, int h,
     pglActiveTexture(GL_TEXTURE3);
     pglBindTexture(GL_TEXTURE_2D, g_texEdge);
     pglUniform1i(U(g_progLayers, "edgeTex"), 3);
+    pglActiveTexture(GL_TEXTURE4);
+    pglBindTexture(GL_TEXTURE_2D, g_texAlpha);
+    pglUniform1i(U(g_progLayers, "alphaTex"), 4);
     // Fill_GPU 参数 (设计: speedOverlay + borderControl + gamma/exposure)
     pglUniform1f(U(g_progLayers, "speedMapInfluenceF"), speedInfluence);
     pglUniform1f(U(g_progLayers, "borderInfluenceF"), borderInfluence);
@@ -527,15 +568,20 @@ bool renderFrame(const float* srcRGBA, int w, int h,
     pglUniform1f(U(g_progLayers, "softEdge"), 1.f / std::max(maxB, 1.f));
     pglUniform1i(U(g_progLayers, "speedMapChannel"), speedMapChannel);
     pglUniform1i(U(g_progLayers, "dbgLayer"), 0);  // 0=关闭调试
+    pglUniform1i(U(g_progLayers, "sourceMode"), sourceMode);  // 文字模式: 1=填充覆盖
     pglUniform1i(U(g_progLayers, "nLayers"), preset.nLayers);
     float starts[5] = {}, ends[5] = {}, grows[5] = {}, ops[5] = {};
     int modes[5] = {}, overlays[5] = {}, nStops[5] = {}, gm[5] = {};
     float colors[20] = {}, stops[240] = {}, stopsA[240] = {};
     float displ[5] = {}, dsize[5] = {}, blurs[5] = {};
-    // 按预设数据顺序渲染 (设计  层循环无 order 排序; 后画覆盖先画)
-    // 层数据按槽位顺序 (0..nLayers-1) 上传, shader 按 li 槽位读取
+    // 层数据按 order 升序合成 (与 CPU renderPresetDirect 一致: 小者先画=底层)
+    int nL = std::min(preset.nLayers, 5);
     int idx[5];
     for (int i = 0; i < 5; i++) idx[i] = i;
+    for (int a = 0; a < nL; a++)
+        for (int b = a + 1; b < nL; b++)
+            if (preset.layers[idx[b]].order < preset.layers[idx[a]].order)
+                std::swap(idx[a], idx[b]);
     for (int slot = 0; slot < 5; slot++) {
         int i = idx[slot];  // 排序后第 slot 个层 = 原始 layers[i]
         starts[slot] = 0; ends[slot] = 99; modes[slot] = 0; overlays[slot] = 0;
@@ -549,7 +595,9 @@ bool renderFrame(const float* srcRGBA, int w, int h,
             int bm = (L.overlayMode != 0) ? L.overlayMode : (blendMode > 0 ? blendMode : 1);
             overlays[slot] = bm;
             nStops[slot] = L.nStops; gm[slot] = L.gradientMode;
-            blurs[slot] = L.blur;
+            // 层 blur 暂与 CPU 直通管线一致 (CPU 侧未消费层 blur, 全局模糊参数才生效):
+            // GPU 同步禁用层 blur, 避免双路径漂移 [层 blur 作为后续功能补全]
+            blurs[slot] = 0;
             colors[slot*4+0] = L.color[0]; colors[slot*4+1] = L.color[1];
             colors[slot*4+2] = L.color[2]; colors[slot*4+3] = L.color[3];
             // 拷贝并按 pos 排序 (设计预设数据 pos 乱序)

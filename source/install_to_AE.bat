@@ -4,7 +4,7 @@ rem  TestFill - install only (run as Administrator)
 rem ============================================================
 setlocal
 
-set SRC=%~dp0build\FillingEffect.aex
+set SRC=D:\work\AI\work\FillingEffect\build\FillingEffect.aex
 set EFXDIR=C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\Plug-ins\Effects
 
 if not exist "%EFXDIR%" (

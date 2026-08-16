@@ -40,6 +40,7 @@ bool renderFrame(const float* srcRGBA, int w, int h,
                  int speedMapChannel,
                  std::vector<float>& outRGBA,
                  const float* seedMask = nullptr,
-                 int blendMode = 0);
+                 int blendMode = 0,
+                 int sourceMode = 0);
 
 } // namespace glr
