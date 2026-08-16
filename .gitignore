@@ -1,0 +1,9 @@
+build/
+*.obj
+*.exe
+*.aex
+*.lib
+*.exp
+*.log
+*.out.txt
+.vs/
