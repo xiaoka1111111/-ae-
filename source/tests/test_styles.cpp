@@ -49,7 +49,7 @@ int main() {
             if (!cn || cn[0] == 0) { nameOk = false; break; }
         }
         CHECK(nameOk, "kPresetNamesCN 30 项非空");
-        // 按 | 分隔统计 POPUP 项数 (设计列表 None/Reset 前置 -> 32 项)
+        // 按 | 分隔统计 POPUP 项数 (原版列表 None/Reset 前置 -> 32 项)
         int items = 1;
         for (const char* s = kPresetPopupItemsCN; *s; s++) if (*s == '|') items++;
         char itemsMsg[64];
@@ -101,7 +101,7 @@ int main() {
     sampleGradient(LF.stops, LF.nStops, 1.0f, &r, &g, &b, &a);
     CHECK(std::fabs(g) < 0.01f, "Fire 渐变终点 = 红色 (1, 0, 0)");
 
-    // 4. 混合模式 ( 跳表 → PF_Xfer 权威映射, A 级依据)
+    // 4. 混合模式 (0x3D830 跳表 → PF_Xfer 权威映射, A 级证据)
     printf("[4] 混合模式:\n");
     {
         float dr = 0.5f, dg = 0.5f, db = 0.5f, da = 0.f;
@@ -238,7 +238,7 @@ int main() {
         d0 /= c0;
         printf("    speed=0/border=0/gamma=1: 平均差=%.5f\n", d0);
         CHECK(d0 < 1e-4, "speed=0/border=0/gamma=1 时输出与基线一致");
-        // speed=0.5: fill 为 0/1 二值 + 1px 软边时端到端调制量极小 (设计 coverage 同理);
+        // speed=0.5: fill 为 0/1 二值 + 1px 软边时端到端调制量极小 (原版 coverage 同理);
         // 直接验证 fillComposite 数学 (fill=0.5 软边中间值场景)
         fp.speedMapInfluenceF = 0.5f;
         renderPreset(fr, buf, src7.data(), W, H, cR, cG, cB, cA);
@@ -282,7 +282,7 @@ int main() {
         fr.params = nullptr;
     }
 
-    // 8. 圆点笔刷种子 (设计  实现)
+    // 8. 圆点笔刷种子 (原版 0x140E96 )
     printf("[8] 圆点笔刷种子:\n");
     {
         const int W8 = 96, H8 = 96;
@@ -296,7 +296,7 @@ int main() {
         // 软边: r in (9,10] -> factor=(100-sq)/19 > 0; 对角 (49,57): sq=82 -> 0.947
         CHECK(mask[(size_t)57*W8+49] > 0.5f && mask[(size_t)57*W8+49] < 1.0f,
               "软边环 factor in (0,1) (对角 sq=82 -> 0.947)");
-        CHECK(mask[(size_t)48*W8+58] < 0.01f, "半径 10 边界 factor=0 (设计 sq_rad 语义)");
+        CHECK(mask[(size_t)48*W8+58] < 0.01f, "半径 10 边界 factor=0 (原版 sq_rad 语义)");
         CHECK(mask[(size_t)48*W8+63] < 0.01f, "半径外 factor=0 (r=15)");
         // 多点取 max
         float pts2[4] = { 30.f, 30.f, 70.f, 70.f };
@@ -334,7 +334,7 @@ int main() {
         CHECK(r8b < r8 + 0.05f, "双种子传播 ≥ 单种子 (多源更快)");
     }
 
-    // 9. 速度图生成 (设计 SpeedMap 内核 / 实现;
+    // 9. 速度图生成 (原版 SpeedMap 内核 0x332C0/0x335C0 ;
     //    实证: channel 仅 亮度|Alpha 2 项, 主通道写入 R 位置; mode∉{1,2}=0)
     printf("[9] 速度图生成:\n");
     {

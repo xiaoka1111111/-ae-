@@ -89,7 +89,7 @@ static void logFrame(const char* fmt, ...) {	long n = InterlockedIncrement(&g_lo
 	}
 }
 
-// 参数枚举 — 对齐设计面板顺序 (截图 OCR 实证; PF_ADD_TOPIC 参数组在 AE 渲染
+// 参数枚举 — 对齐原版面板顺序 (截图 OCR 实证; PF_ADD_TOPIC 参数组在 AE 渲染
 // 兼容性待验证, 暂用扁平顺序 — 后续验证通过再恢复折叠)
 enum {
 	AF_INPUT = 0,
@@ -98,14 +98,14 @@ enum {
 	AF_POINT_COUNT,      // 生长点数 1-5
 	AF_RADIUS,           // 笔刷半径
 	AF_POS1, AF_POS2, AF_POS3, AF_POS4, AF_POS5,  // 点位置 x5
-	AF_DELAY,            // 点延迟 (帧, 设计"延迟（帧）" 0-100)
+	AF_DELAY,            // 点延迟 (帧, 原版"延迟（帧）" 0-100)
 	AF_SPEED,            // 生长速度 (per sec, 默认 100)
-	AF_SMAP_MODE,        // 速度图模式 (设计 6 项: 无|较慢近边界|自定义图层|基于形状的流动|湍流噪波|都)
+	AF_SMAP_MODE,        // 速度图模式 (原版 6 项: 无|较慢近边界|自定义图层|基于形状的流动|湍流噪波|都)
 	AF_SMAP_INFLUENCE,   // 速度图影响
-	AF_CHANNEL,          // 通道 (设计仅 亮度|Alpha 2 项 — 实证 )
+	AF_CHANNEL,          // 通道 (原版仅 亮度|Alpha 2 项 — 实证 0x1FDE00)
 	AF_BORDER_STRENGTH,  // 边框强度
 	AF_BORDER_EXPAND,    // 边框扩展
-	AF_BRIDGE_MODE,      // 桥接模式 (设计 无|遮罩|图层 — 实证 )
+	AF_BRIDGE_MODE,      // 桥接模式 (原版 无|遮罩|图层 — 实证 0x1FE480)
 	AF_BRIDGE_THICK,     // 桥接厚度
 	AF_BLUR_RADIUS,      // 模糊半径
 	AF_EXPOSURE,         // 曝光
@@ -116,11 +116,18 @@ enum {
 	AF_VIEW,             // 调试视图: 关|生长|速度图|边框
 	AF_ABOUT,
 	// ---- 追加参数 (放在尾部: 保持上述索引不变, 旧 AE 工程参数值不错位) ----
-	AF_GROWTH_SOURCE,    // 生长来源 (设计 点|噪波|图层 — 实证 )
-	AF_BLEND_MODE,       // 混合模式 (设计 12 项选项表 ; 0=跟随预设)
-	AF_DELAY2, AF_DELAY3, AF_DELAY4, AF_DELAY5,  // 点 2..5 延迟 (设计 param 32/34/36/38)
+	AF_GROWTH_SOURCE,    // 生长来源 (原版 点|噪波|图层 — 实证 0x1FDDB0)
+	AF_BLEND_MODE,       // 混合模式 (原版 12 项选项表 0x1FE350; 0=跟随预设)
+	AF_DELAY2, AF_DELAY3, AF_DELAY4, AF_DELAY5,  // 点 2..5 延迟 (原版 param 32/34/36/38)
 	AF_LOOP_FADE,        // 循环淡出 0-100% (周期末尾平滑淡出强度; 0=硬回绕原语义)
-	AF_SOURCE_MODE,      // 文字模式: 0=设计(源图盖顶, 文字保持原色) 1=填充覆盖文字
+	AF_SOURCE_MODE,      // 文字模式: 0=原版(源图盖顶, 文字保持原色) 1=填充覆盖文字
+	// ---- 噪波生长参数 (原版 Noise 生长源: 分形噪波白色区域作起始点) ----
+	AF_NOISE_SCALE,      // 噪波缩放 (图案大小)
+	AF_NOISE_EVOLUTION,  // 噪波演化 (相位偏移, 可动画)
+	AF_NOISE_OFFSET_X,   // 噪波水平偏移
+	AF_NOISE_OFFSET_Y,   // 噪波垂直偏移
+	AF_NOISE_CONTRAST,   // 噪波对比度
+	AF_NOISE_COMPLEXITY, // 噪波复杂度 (层数)
 	AF_NUM_PARAMS_TOTAL,
 	// ---- 参数组 ID (PF_ADD_TOPIC 不占 params[] 索引, 用 100+ 段) ----
 	AF_GROUP_GROWTH = 100,
@@ -165,7 +172,7 @@ GlobalSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef*[], PF_LayerDe
 
 	// 传统 Render 路径 (不回 SmartRender):
 	//   SmartRender 区域渲染时 AE 可能请求变换后区域 (output≠src 尺寸, 实测 23x7 vs 50x55),
-	//   实现的左上对齐导致内容偏移到坐标 0,0。设计是老式插件 (AEGP Iterate 依据),
+	//   复刻的左上对齐导致内容偏移到坐标 0,0。原版是老式插件 (AEGP Iterate 证据),
 	//   传统 Render 下 AE 保证 src==output==图层像素尺寸, 效果正确铺满图层。
 	//   因此不设置 PF_OutFlag2_SUPPORTS_SMART_RENDER (连带不设 FLOAT_COLOR_AWARE,
 	//   AE 2026 严格校验两者绑定)。
@@ -193,12 +200,12 @@ ParamsSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_
 	PF_Err err = PF_Err_NONE;
 	PF_ParamDef def;
 
-	// ---- Pipeline: 预设 (设计列表 = None/Reset + 30 预设 32 项, 运行时实测) ----
+	// ---- Pipeline: 预设 (原版列表 = None/Reset + 30 预设 32 项, 运行时实测) ----
 	AEFX_CLR_STRUCT(def);
 	PF_ADD_POPUPX("预设", kPresetPopupCount, 2, kPresetPopupItemsCN, 0, AF_PRESET);
 
-	// ---- Quality (设计 param 6: 完整|一半|双重 popup, A 级 实现-参数来源.md §1.1;
-	//      除数表 {1.0,1.0,2.0,0.5}@, 3 选项用 0..2) ----
+	// ---- Quality (原版 param 6: 完整|一半|双重 popup, A 级 参数来源.md §1.1;
+	//      除数表 {1.0,1.0,2.0,0.5}@0x13C0E8, 3 选项用 0..2) ----
 	AEFX_CLR_STRUCT(def);
 	PF_ADD_POPUPX("质量", 3, 0, "完整|一半|双重", 0, AF_QUALITY);
 
@@ -209,7 +216,7 @@ ParamsSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_
 	PF_ADD_FLOAT_SLIDERX("笔刷半径", 1.0f, 500.0f, 1.0f, 500.0f, 10.0f, 1, 0, 0, AF_RADIUS);
 
 	AEFX_CLR_STRUCT(def);
-	// 设计默认 {45,45} = 45% 图层宽高 ( 16.16 定点, A 级 实现-参数来源 §1.1)
+	// 原版默认 {45,45} = 45% 图层宽高 (0x2d0000 16.16 定点, A 级 参数来源 §1.1)
 	// 修正 [2026-08-16]: PF_ADD_POINT(45,45) 的 FLOAT2FIX 默认值会被 AE 按"百分比→
 	// 像素"换算 (新工程实测默认读出 144%/81% — 320×180 图层的 45%×320=144px),
 	// 导致新工程点位置错位 (heal 只修越界 x, y=81% 偏下)。
@@ -229,34 +236,34 @@ ParamsSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_
 	PF_ADD_POINT_PRECONVERTED("点 5 位置", FLOAT2FIX(45), FLOAT2FIX(45), 0, AF_POS5);
 
 	AEFX_CLR_STRUCT(def);
-	// 设计"延迟（帧）" (): 0-100 滑块, 默认 0;  gating = 延迟/100 ≤ p01
+	// 原版"延迟（帧）" (0x1FE410): 0-100 滑块, 默认 0; 0x18060 gating = 延迟/100 ≤ p01
 	PF_ADD_SLIDER("点延迟 (帧)", 0, 100, 0, 100, 0, AF_DELAY);
 
 	AEFX_CLR_STRUCT(def);
 	PF_ADD_FLOAT_SLIDERX("生长速度 (每秒)", 1.0f, 500.0f, 1.0f, 500.0f, 100.0f, 1, 0, 0, AF_SPEED);
 
 	AEFX_CLR_STRUCT(def);
-	// 设计 6 项 (实证 ): 无|在边界附近速度较慢|自定义图层|基于形状的流动|湍流噪波|都
-	// 默认 "基于形状的流动" (截图 OCR 值; 实现默认即此)
+	// 原版 6 项 (实证 0x1FE010): 无|在边界附近速度较慢|自定义图层|基于形状的流动|湍流噪波|都
+	// 默认 "基于形状的流动" (截图 OCR 值; 复刻默认即此)
 	PF_ADD_POPUPX("速度图模式", 6, 3, "无|在边界附近速度较慢|自定义图层|基于形状的流动|湍流噪波|都", 0, AF_SMAP_MODE);
 
 	AEFX_CLR_STRUCT(def);
 	PF_ADD_FLOAT_SLIDERX("速度图影响", 0.0f, 1.0f, 0.0f, 1.0f, 0.5f, 3, 0, 0, AF_SMAP_INFLUENCE);
 
 	AEFX_CLR_STRUCT(def);
-	// 设计仅 亮度|Alpha 2 项 (实证 ) — 实现原 Luma|R|G|B|A 5 项是自行扩展, 与原件不符
+	// 原版仅 亮度|Alpha 2 项 (实证 0x1FDE00) — 复刻原 Luma|R|G|B|A 5 项是自行扩展, 与原件不符
 	PF_ADD_POPUPX("通道", 2, 0, "亮度|Alpha", 0, AF_CHANNEL);
 
 	AEFX_CLR_STRUCT(def);
 	// 默认 0 (截图 100% 是用户设置; 强度>0 时 borderControl 用 Sobel 边缘调制,
-	// 内部 0 会压黑填充区 — 需配合边框扩展或设计语义)
-	PF_ADD_FLOAT_SLIDERX("边框强度", 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 3, 0, 0, AF_BORDER_STRENGTH);
+	// 内部 0 会压黑填充区 — 需配合边框扩展或原版语义)
+	PF_ADD_FLOAT_SLIDERX("边框强度", 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 3, 0, 0, AF_BORDER_STRENGTH);
 
 	AEFX_CLR_STRUCT(def);
 	PF_ADD_FLOAT_SLIDERX("边框扩展", 0.0f, 100.0f, 0.0f, 100.0f, 0.0f, 1, 0, 0, AF_BORDER_EXPAND);
 
 	AEFX_CLR_STRUCT(def);
-	// 设计 无|遮罩|图层 (实证 ); 渲染侧 bridge=0 (无) 与验证一致
+	// 原版 无|遮罩|图层 (实证 0x1FE480); 渲染侧 bridge=0 (无) 与验证一致
 	PF_ADD_POPUPX("桥接模式", 3, 0, "无|遮罩|图层", 0, AF_BRIDGE_MODE);
 
 	AEFX_CLR_STRUCT(def);
@@ -291,19 +298,19 @@ ParamsSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_
 
 	// ---- 追加参数 (注册在尾部: 索引与枚举一致, 旧工程参数值不错位) ----
 	AEFX_CLR_STRUCT(def);
-	// 设计 Growth Source (实证 ): 点|噪波|图层
+	// 原版 Growth Source (实证 0x1FDDB0): 点|噪波|图层
 	PF_ADD_POPUPX("生长来源", 3, 0, "点|噪波|图层", 0, AF_GROWTH_SOURCE);
 
 	AEFX_CLR_STRUCT(def);
-	// 设计"叠加模式"下拉框 ( 原样, 含 5 个 "(-" 分隔符与两个"叠加":
-	//   第 1 个"叠加"=设计英文 Add(相加), 第 2 个=Overlay(叠加) — 本地化同词):
-	//   1-based 值 →  跳表 → PF_Xfer (A 级依据, 见 dissolve_styles.h 注释):
+	// 原版"叠加模式"下拉框 (0x1FE350 原样, 含 5 个 "(-" 分隔符与两个"叠加":
+	//   第 1 个"叠加"=原版英文 Add(相加), 第 2 个=Overlay(叠加) — 本地化同词):
+	//   1-based 值 → 0x3D830 跳表 → PF_Xfer (A 级证据, 见 dissolve_styles.h 注释):
 	//   1 正常 | 3 正片叠底 | 4 颜色加深 | 6 叠加(相加) | 7 滤色 | 9 叠加 |
 	//   10 柔光 | 12 颜色 | 14 模版Alpha | 15 模版亮度 | 16 剪影Alpha | 17 剪影亮度
 	PF_ADD_POPUPX("混合模式", 17, 1, "正常|(-|正片叠底|颜色加深|(-|叠加|滤色|(-|叠加|柔光|(-|颜色|(-|模版Alpha|模版亮度|剪影Alpha|剪影亮度", 0, AF_BLEND_MODE);
 
-	// ---- 追加: 点 2..5 独立延迟 (设计 param 32/34/36/38, 0-100 帧, 默认 0;
-	//      与设计每层延迟对齐; 点 1 延迟=AF_DELAY) ----
+	// ---- 追加: 点 2..5 独立延迟 (原版 param 32/34/36/38, 0-100 帧, 默认 0;
+	//      与原版每层延迟对齐; 点 1 延迟=AF_DELAY) ----
 	for (int i = 0; i < 4; i++) {
 		char name[32];
 		snprintf(name, sizeof(name), "点 %d 延迟 (帧)", i + 2);
@@ -318,12 +325,26 @@ ParamsSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_
 	AEFX_CLR_STRUCT(def);
 	PF_ADD_FLOAT_SLIDERX("循环淡出 (0=自动)", 0.0f, 100.0f, 0.0f, 100.0f, 100.0f, 1, 0, 0, AF_LOOP_FADE);
 
-	// ---- 文字模式 (popup, DFLT=2 默认第 2 项"填充覆盖"): 0=设计 1=填充覆盖文字。
-	//      设计预设含 mode-3"原图"层: 源图 src-over 盖在填充上 → 文字保持原色,
+	// ---- 文字模式 (popup, DFLT=2 默认第 2 项"填充覆盖"): 0=原版 1=填充覆盖文字。
+	//      原版预设含 mode-3"原图"层: 源图 src-over 盖在填充上 → 文字保持原色,
 	//      彩色只填透明背景 (用户三次反馈"蓝块在图层底下" — 默认直接给"填充覆盖",
-	//      颜色覆盖文字区域; 切回"设计"可还设计 Reveal 语义)。 [B]
+	//      颜色覆盖文字区域; 切回"原版"可还原版 Reveal 语义)。 [B]
 	AEFX_CLR_STRUCT(def);
-	PF_ADD_POPUPX("文字模式", 2, 2, "设计|填充覆盖", 0, AF_SOURCE_MODE);
+	PF_ADD_POPUPX("文字模式", 2, 2, "原版|填充覆盖", 0, AF_SOURCE_MODE);
+
+	// ---- 噪波生长参数 (原版 Noise 生长源: 分形噪波白色区域作起始点) ----
+	AEFX_CLR_STRUCT(def);
+	PF_ADD_FLOAT_SLIDERX("噪波缩放", 0.1f, 10.0f, 0.1f, 10.0f, 1.0f, 2, 0, 0, AF_NOISE_SCALE);
+	AEFX_CLR_STRUCT(def);
+	PF_ADD_FLOAT_SLIDERX("噪波演化", 0.0f, 100.0f, 0.0f, 100.0f, 0.0f, 2, 0, 0, AF_NOISE_EVOLUTION);
+	AEFX_CLR_STRUCT(def);
+	PF_ADD_FLOAT_SLIDERX("噪波偏移 X", -10.0f, 10.0f, -10.0f, 10.0f, 0.0f, 2, 0, 0, AF_NOISE_OFFSET_X);
+	AEFX_CLR_STRUCT(def);
+	PF_ADD_FLOAT_SLIDERX("噪波偏移 Y", -10.0f, 10.0f, -10.0f, 10.0f, 0.0f, 2, 0, 0, AF_NOISE_OFFSET_Y);
+	AEFX_CLR_STRUCT(def);
+	PF_ADD_FLOAT_SLIDERX("噪波对比度", 0.0f, 2.0f, 0.0f, 2.0f, 1.0f, 2, 0, 0, AF_NOISE_CONTRAST);
+	AEFX_CLR_STRUCT(def);
+	PF_ADD_SLIDER("噪波复杂度", 1, 8, 1, 8, 4, AF_NOISE_COMPLEXITY);
 
 	// 注: 不在 ParamsSetup 里遍历 params[] 加 SUPERVISE —
 	// PARAMS_SETUP 期间 params[] 数组大小 = 旧注册数 (首次应用仅输入槽),
@@ -340,7 +361,7 @@ ParamsSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_
 // src 内容位于 output 的 (src.origin - out.origin) 处), 其余填 0。
 // 关键: 只读取 extent_hint 有效区域 (AE 只保证该矩形内数据有效, 区域外可能是
 // 垃圾数据 — 忽略它会导致 alpha 哈希漂移 (缓存失效) 和形状错误)。
-// 设计语义: 效果限定在图层区域, 不拉伸。
+// 原版语义: 效果限定在图层区域, 不拉伸。
 static void copyToFloat(const PF_EffectWorld& w, short depth, std::vector<float>& out,
                         int ow, int oh, int offX, int offY)
 {
@@ -461,17 +482,17 @@ static void copyFromFloat(const std::vector<float>& in, short depth, PF_EffectWo
 	}
 }
 
-// ---------- 圆点笔刷 UI 参数 (设计 : 用户放置点, 最多 5 点) ----------
+// ---------- 圆点笔刷 UI 参数 (原版 0x140E96: 用户放置点, 最多 5 点) ----------
 struct BrushUI {
-	bool  enable = true;        // 点数>=1 即启用 (设计默认点种子)
+	bool  enable = true;        // 点数>=1 即启用 (原版默认点种子)
 	float radius = 10.f;
 	int   num = 1;              // 1-5
-	float px[10] = { 45.f };    // 5 个点 (x,y) 图层百分比坐标 (设计默认 {45,45}%)
+	float px[10] = { 45.f };    // 5 个点 (x,y) 图层百分比坐标 (原版默认 {45,45}%)
 	float delay[5] = { 0.f };   // 每点延迟 (帧 0-100, 层 gating 阈值 = 值/100 ≤ p01)
 	float speed = 100.f;        // 生长速度 (per sec, 100=1x)
 };
 
-// ---------- 预设属性覆盖 (设计 Pipeline: Duration/Repeat/Composite Over Original) ----------
+// ---------- 预设属性覆盖 (原版 Pipeline: Duration/Repeat/Composite Over Original) ----------
 struct PresetOverride {
 	float duration = 0.f;   // >0 时覆盖预设 duration
 	int   repeat   = 0;     // >0 时覆盖预设 repeat
@@ -493,13 +514,15 @@ static unsigned long long fingerPrint(const float* alpha, int w, int h) {
 	return f;
 }
 
-// ---------- 静态场缓存 (设计组件名 noiseMap.cache/fillMap.cache 同款语义) ----------
-// 噪声场/边缘场只依赖 (尺寸, 图层形状), 不依赖时间/进度。
-// JFA 距离场不再计算 (实现管线用 BFS 切比雪夫距离, distField 无消费点 —  §三.3)。
-// AE 多线程渲染: 用互斥锁保护, 哈希校验形状变化。
+// ---------- 静态场缓存 (原版组件名 noiseMap.cache/fillMap.cache 同款语义) ----------
+// 噪声场/边缘场依赖 (尺寸, 图层形状) + 噪波参数 (缩放/演变/偏移/对比度/复杂度)
+// — 演变可动画 → 参数哈希逐帧变化时逐帧重算 (正确行为)。
+// JFA 距离场不再计算 (直通管线用 BFS 切比雪夫距离, distField 无消费点 —  §三.3)。
+// AE 多线程渲染: 用互斥锁保护, 哈希校验形状/参数变化。
 struct StaticFieldCache {
 	int w = 0, h = 0;
 	unsigned long long shapeHash = 0;
+	unsigned long long paramHash = 0;   // 噪波参数指纹
 	std::vector<float> noiseMap, edgeMap;
 };
 static StaticFieldCache g_fieldCache;
@@ -524,15 +547,29 @@ static unsigned long long hashAlpha(const float* a, size_t n) {
 	return h;
 }
 
+// 噪波参数指纹 (噪声场依赖的全部参数)
+static unsigned long long hashNoiseParams(const dissolve::Params& p) {
+	unsigned long long h = 1469598103934665603ULL;
+	unsigned v;
+	auto mix = [&](float f) { memcpy(&v, &f, 4); h ^= v; h *= 1099511628211ULL; };
+	mix(p.noiseScale); mix(p.scaleX); mix(p.scaleY); mix(p.brightness);
+	mix(p.contrast); mix(p.evolution); mix(p.aspect);
+	mix(p.layerOffsetX); mix(p.layerOffsetY);
+	mix(p.userOffsetX); mix(p.userOffsetY);
+	h ^= (unsigned)p.complexityL; h *= 1099511628211ULL;
+	return h;
+}
+
 // 计算或复用静态场 (buf 输出); 返回 true=本次重算 false=命中缓存
 static bool getStaticFields(dissolve::Params& p, dissolve::Buffers& buf,
                             const float* alpha, int w, int h)
 {
 	size_t n = (size_t)w * h;
 	unsigned long long hh = hashAlpha(alpha, n);
+	unsigned long long ph = hashNoiseParams(p);
 	std::lock_guard<std::mutex> lk(g_fieldCacheMutex);
 	if (g_fieldCache.w == w && g_fieldCache.h == h &&
-	    g_fieldCache.shapeHash == hh &&
+	    g_fieldCache.shapeHash == hh && g_fieldCache.paramHash == ph &&
 	    g_fieldCache.noiseMap.size() == n) {
 		buf.noiseMap = g_fieldCache.noiseMap;
 		buf.edgeMap  = g_fieldCache.edgeMap;
@@ -542,9 +579,42 @@ static bool getStaticFields(dissolve::Params& p, dissolve::Buffers& buf,
 	dissolve::generateNoiseMap(p, buf, w, h);
 	dissolve::sobelEdges(alpha, buf, w, h);
 	g_fieldCache.w = w; g_fieldCache.h = h; g_fieldCache.shapeHash = hh;
+	g_fieldCache.paramHash = ph;
 	g_fieldCache.noiseMap = buf.noiseMap;
 	g_fieldCache.edgeMap  = buf.edgeMap;
 	buf.shapeHash = hh;
+	return true;
+}
+
+// 传播掩码缓存 (原版 Borders): 形状 alpha 膨胀 spread 像素 → 波前可越过
+// 弱边界 (低 Border Strength 溢出) / 桥接缝隙 / 边界扩展。
+// 只依赖 (形状哈希, spread), 与参数/时间无关 → 缓存复用 (膨胀成本高, 每帧重算不可行)。
+struct PropMaskCache {
+	int w = 0, h = 0;
+	unsigned long long shapeHash = 0;
+	int spread = 0;
+	std::vector<float> mask;
+};
+static PropMaskCache g_propMaskCache;
+static std::mutex g_propMaskMutex;
+
+// 获取传播掩码 (out 输出); 返回 true=本次重算 false=命中缓存
+static bool getPropMask(unsigned long long shapeHash, const float* alpha,
+                        int w, int h, int spread, std::vector<float>& out)
+{
+	std::lock_guard<std::mutex> lk(g_propMaskMutex);
+	if (g_propMaskCache.w == w && g_propMaskCache.h == h &&
+	    g_propMaskCache.shapeHash == shapeHash && g_propMaskCache.spread == spread &&
+	    g_propMaskCache.mask.size() == (size_t)w * h) {
+		out = g_propMaskCache.mask;  // 命中: 拷贝 (仅 spread>0 路径调用, 成本可接受)
+		return false;
+	}
+	std::vector<float> src(alpha, alpha + (size_t)w * h);
+	if (spread > 0) dissolve::dilateMaxField(src, out, w, h, spread);
+	else out = std::move(src);
+	g_propMaskCache.w = w; g_propMaskCache.h = h;
+	g_propMaskCache.shapeHash = shapeHash; g_propMaskCache.spread = spread;
+	g_propMaskCache.mask = out;
 	return true;
 }
 
@@ -620,7 +690,7 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 	// ---- 预设多层渲染管线 (CPU/GPU 双路径) ----
 	dissolve::Buffers buf;
 	Preset pres = kPresets[presetIdx];
-	// 面板覆盖预设属性 (设计 Pipeline 参数, 0/自动 = 用预设)
+	// 面板覆盖预设属性 (原版 Pipeline 参数, 0/自动 = 用预设)
 	// 默认演化周期 3s 全程循环: 预设 duration=1s 在 43.5s 合成里只演 1 秒,
 	// 合成时长慢扫又观感静止 — 3s 循环保证任何时刻都在演化 [B]。
 	// AF_DURATION/AF_REPEAT >0 可精确覆盖。
@@ -637,14 +707,14 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 	}
 	if (po.composite > 0) pres.compOverOriginal = po.composite - 1;
 
-	// 2. 时间进度 (播放头) — 设计 A 级公式 (实现-参数来源.md §1.2):
+	// 2. 时间进度 (播放头) — 原版 A 级公式 (参数来源.md §1.2):
 	//   frame01 = (int)低32位(time) / (int)高32位(time)  = A_Time value/scale = 秒
 	//   v1 (项目版本 v1): divisor = param17 (持续时间帧)
 	//   v2:                divisor = 帧 / 高32位 × param18 (持续时间秒)
 	//   p01 = clamp((frame01 + 1) / divisor, 0, 1)   ← +1: 首帧即有内容; 无循环, 到 1 停住
-	// 实现映射 [C]: divisor = pres.duration × 帧率 (param17 "持续时间帧" 同量纲;
+	// 复刻映射 [C]: divisor = pres.duration × 帧率 (param17 "持续时间帧" 同量纲;
 	//   分子 = 已过帧数+1, 首帧 1/总帧数 ≈ 3% 进度, duration 秒完成)
-	// 起始可见度 [B]: 设计 +1 帧在 4000×4000 合成下 t=0 波前半径 ≈ 0 (1/90 ≈ 1.1%),
+	// 起始可见度 [B]: 原版 +1 帧在 4000×4000 合成下 t=0 波前半径 ≈ 0 (1/90 ≈ 1.1%),
 	//   打开工程时效果完全不可见 (日志实证 t=0 lit=2416/16M)。加起始偏置 kStartBias:
 	//   t=0 波前即有 12% 半径 — 打开即见效果, 循环首尾也连续。
 	const float kStartBias = 0.12f;
@@ -652,8 +722,8 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 	// 循环演化: repeat>1 时时间折叠进周期 (波前周期性扫过, 任何时刻可见动画)
 	if (pres.repeat > 1)
 		seconds = std::fmod(seconds, pres.duration);
-	// 设计进度: p01 = clamp((帧号+1)/divisor, 0, 1) — 不含全局延迟偏移;
-	// 延迟(帧) = 每层 gating 阈值 (: 延迟/100 ≤ p01), 在 renderPresetDirect 内消费
+	// 原版进度: p01 = clamp((帧号+1)/divisor, 0, 1) — 不含全局延迟偏移;
+	// 延迟(帧) = 每层 gating 阈值 (0x18060: 延迟/100 ≤ p01), 在 renderPresetDirect 内消费
 	float speedF = std::max(brush.speed, 1.f) / 100.f;    // 100 = 1x
 	float fps = (float)std::max<A_u_long>(time_scale, 1) / 1024.f;
 	float divisor = std::max(pres.duration * fps, 1.f);
@@ -717,13 +787,22 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 			nL, dPts[0], dPts[1], rw, rh, baseX, baseY, aSeed);
 	}
 
+	// 传播掩码配置 (原版 Borders/Bridges):
+	//   spread = 边界扩展 + 桥接厚度/2 + (1−边界强度)×40 (弱边界允许溢出)
+	//   默认 (扩展 0/无桥接/强度 1) → spread=0 → 传播=形状 alpha, 零开销
+	int spread = p.borderExpand;
+	if (p.bridgeMode != 0) spread += std::max(p.bridgeThick / 2, 1);
+	spread += (int)((1.f - p.borderStrength) * 40.f);
+
 	// 3. 图层渲染 (CPU 直通管线 / GPU 双路径)
 	std::vector<float> cR, cG, cB, cA;
 	// GPU 路径恢复 [2026-08-17]:
 	//   独立进程基准: 4000×4000 全图 466ms / 区域 3744×563 84ms — GPU 本身无"6.8s"问题;
 	//   AE 内实测: GPU 区域 51ms/帧 (首帧 101ms 含 shader 编译)。
 	//   渲染器参数 (AE popup 1-based): 1=CPU 2=GPU 3=自动 (失败回退 CPU)。
-	bool useGPU = (renderer >= 2);
+	//   门控 [修正 2026-08-18]: GPU 仅支持点生长 + 默认传播掩码
+	//   (噪波/图层生长种子场与膨胀掩码是 CPU 语义, 回退 CPU 保证一致)。
+	bool useGPU = (renderer >= 2) && p.growthSource == 0 && spread == 0;
 	if (useGPU) {
 		// 噪声参数数组 (glr 需要; 顺序: noiseScale/scaleX/scaleY/brightness/contrast/evolution/aspect)
 		float noiseParams[7] = {
@@ -792,7 +871,7 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 		bool recomputed = getStaticFields(p, buf, alphaR.data(), rw, rh);
 		if (recomputed) logFrame("  [cache] 静态场重算 (%dx%d)", rw, rh);
 		TIMER_MARK("staticFields(缓存/重算)");
-		// CPU 路径: 实现管线 (GrowthDrawCPU  主流程)
+		// CPU 路径: 直通管线 (GrowthDrawCPU 0x18060 主流程)
 		dissolve::DirectFrame dfr;
 		dfr.preset = &pres;
 		dfr.progress01 = std::min(std::max(prog / 100.f, 0.f), 1.f);
@@ -810,7 +889,7 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 		logFrame("  [env] p01=%.3f fadeF=%.2f loopEnv=%.3f", p01, fadeF, dfr.loopEnv);
 		dfr.splatRadius = brush.radius;   // param 28 半径 (默认 10)
 		dfr.rampS = 1.f;                  // param 24 噪波对比度 [C 默认]
-		{  // param 6 质量 → 除数表 {1,1,2,0.5} (A 级, )
+		{  // param 6 质量 → 除数表 {1,1,2,0.5} (A 级, 0x13C0E8)
 			static const float kDivTable[4] = {1.f, 1.f, 2.f, 0.5f};
 			dfr.divisor = std::max(kDivTable[std::min(std::max(p.quality, 0), 3)], 0.001f);
 		}
@@ -820,11 +899,19 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 		dfr.srcRGBA = rgbaR.data();
 		dfr.noiseFill = buf.noiseMap.empty() ? nullptr : buf.noiseMap.data();
 		dfr.shapeAlpha = alphaR.data();  // 传播/填充限定在图层内容形状 (dilate cull 语义)
+		// 传播掩码 (原版 Borders): spread>0 时构建膨胀掩码 (缓存复用);
+		// spread==0 → nullptr → renderPresetDirect 回退 shapeAlpha 语义 (零开销)
+		std::vector<float> propMask;
+		if (spread > 0) {
+			bool pmNew = getPropMask(buf.shapeHash, alphaR.data(), rw, rh, spread, propMask);
+			if (pmNew) logFrame("  [cache] 传播掩码重算 spread=%d", spread);
+			dfr.propMask = propMask.data();
+		}
 		// (dPts/dTh/nL 已在上方共用计算)
 		dfr.layerPts = dPts.data();
 		dfr.layerThresh = dTh.data();
-		dfr.blendMode = p.blendMode;  // 面板混合模式 ( 跳表权威映射, 1-based)
-		// BFS 距离场缓存键 = 形状指纹 ^ 点/半径配置指纹
+		dfr.blendMode = p.blendMode;  // 面板混合模式 (0x3D830 跳表权威映射, 1-based)
+		// BFS 距离场缓存键 = 形状指纹 ^ 点/半径配置指纹 ^ 传播掩码指纹
 		{
 			uint64_t k = buf.shapeHash;
 			for (int bi = 0; bi < 10; bi++) {
@@ -832,9 +919,11 @@ renderWorld(PF_InData* in_data, PF_OutData* out_data,
 				k = k * 131ULL + u;
 			}
 			uint32_t u; std::memcpy(&u, &brush.radius, 4);
-			dfr.staticKey = k * 131ULL + u;
+			k = k * 131ULL + u;
+			k = k * 131ULL + (uint64_t)(uint32_t)spread;  // 传播掩码指纹 (膨胀量)
+			dfr.staticKey = k;
 		}
-		// Fill_GPU (): speedOverlay + borderControl + gamma/exposure
+		// Fill_GPU (0x1425F1): speedOverlay + borderControl + gamma/exposure
 		dissolve::speedMapFromSource(rgbaR.data(), rw, rh,
 		                             std::max(p.speedMapMode, 1),
 		                             p.speedMapChannel, 1.f, buf.speedMap);
@@ -922,14 +1011,14 @@ readParams(PF_ParamDef* params[], dissolve::Params& p,
            int& presetIdx, int& renderer, BrushUI& brush, int& viewMode,
            PresetOverride& po)
 {
-	// 内部固定参数 (设计面板未暴露: 噪点/缩放/亮度/对比度/演变/复杂度/阈值/伽马/剔除)
-	p.noiseScale = 1.0f;
+	// 内部固定参数 (原版面板未暴露: 图层缩放/亮度/宽高比/图层偏移/阈值/伽马/剔除)
+	//   噪点缩放/演变/偏移/对比度/复杂度已由面板暴露 (下方 AF_NOISE_* 映射)
 	p.scaleX = 1.0f;
 	p.scaleY = 1.0f;
 	p.brightness = 0.5f;
-	p.contrast = 1.0f;
-	p.evolution = 0.0f;
-	p.complexityL = 4;
+	p.aspect = 1.0f;
+	p.layerOffsetX = 0.0f;
+	p.layerOffsetY = 0.0f;
 	p.alphaThreshold = 0.5f;
 	p.gammaF = 1.0f;
 	p.cullB = 0;
@@ -937,27 +1026,42 @@ readParams(PF_ParamDef* params[], dissolve::Params& p,
 	p.numSamples = 8;  // 旧采样数语义 (仅死代码 growthStep 使用, 保留常量)
 	p.quality    = params[AF_QUALITY]->u.pd.value;  // param 6: 0=完整 1=一半 2=双重
 	p.speedMapInfluenceF = params[AF_SMAP_INFLUENCE]->u.fs_d.value;
-	// 设计 6 项 → 内核 mode (实证: 内核仅 {1,2}, 无第三模式):
+	// 原版 6 项 → 内核 mode (实证: 内核仅 {1,2}, 无第三模式):
 	//   0 无 → 0 (关闭, influence 置 0)
 	//   1 在边界附近速度较慢 → 1 [C 回落]   2 自定义图层 → 1 [C 回落]
-	//   3 基于形状的流动 → 1 (实现默认)     4 湍流噪波 → 1 [C 回落]
+	//   3 基于形状的流动 → 1 (复刻默认)     4 湍流噪波 → 1 [C 回落]
 	//   5 都 → 2 (mode2: 主通道/scale)
 	{
 		int sm = params[AF_SMAP_MODE]->u.pd.value;
 		p.speedMapMode = (sm == 5) ? 2 : 1;
 		if (sm == 0) { p.speedMapMode = 0; p.speedMapInfluenceF = 0.f; }
 	}
-	p.speedMapChannel = params[AF_CHANNEL]->u.pd.value;  // 0=亮度 1=Alpha (设计 2 项)
+	p.speedMapChannel = params[AF_CHANNEL]->u.pd.value;  // 0=亮度 1=Alpha (原版 2 项)
 	p.speedMapScale   = 1.0f;  // : 位深常量 (float 源=1.0)
 	p.blurRadius      = params[AF_BLUR_RADIUS]->u.fs_d.value;
 	p.borderExpand    = (int)params[AF_BORDER_EXPAND]->u.fs_d.value;
-	p.borderInfluenceF   = params[AF_BORDER_STRENGTH]->u.fs_d.value;
+	// 边界强度 [语义修正 2026-08-17]: 原版 Border Strength = "填充是否允许越界"
+	// (值越高边界越强, 填充更难突破; 默认强边界)。传播掩码 = 形状膨胀
+	// (expand + (1−strength)×spread); fill 链 borderControl 权重改为内部固定 0。
+	p.borderStrength = std::min(std::max((float)params[AF_BORDER_STRENGTH]->u.fs_d.value, 0.f), 1.f);
+	p.borderInfluenceF = 0.f;
+	// 桥接: 模式非"无"时, 传播掩码额外膨胀 BridgeThickness/2 (简化实现:
+	// 等价于自动桥接相邻分离元素; 原版为蒙版路径/外部图层桥接)
+	p.bridgeMode  = params[AF_BRIDGE_MODE]->u.pd.value;
+	p.bridgeThick = (int)params[AF_BRIDGE_THICK]->u.fs_d.value;
 	p.exposureF    = params[AF_EXPOSURE]->u.fs_d.value;
 	p.timeF        = 1.0f;  // 时间速度固定 (动画由 AF_SPEED 驱动)
-	// 生长来源 (设计 param 9, AE popup 1-based: 点=1 噪波=2 图层=3; 内核分派比较 1/2/3)
-	// → 实现内部 0=点/1=噪波/2=图层 (S3 独立复验备注: 设计分派比较 1/2/3)
+	// 噪波生长参数 (原版 Noise 生长源面板 6 控件 → 噪声场字段, CPU/GPU 共用)
+	p.noiseScale  = params[AF_NOISE_SCALE]->u.fs_d.value;
+	p.evolution   = params[AF_NOISE_EVOLUTION]->u.fs_d.value;
+	p.userOffsetX = params[AF_NOISE_OFFSET_X]->u.fs_d.value;
+	p.userOffsetY = params[AF_NOISE_OFFSET_Y]->u.fs_d.value;
+	p.contrast    = params[AF_NOISE_CONTRAST]->u.fs_d.value;
+	p.complexityL = params[AF_NOISE_COMPLEXITY]->u.sd.value;
+	// 生长来源 (原版 param 9, AE popup 1-based: 点=1 噪波=2 图层=3; 内核分派比较 1/2/3)
+	// → 复刻内部 0=点/1=噪波/2=图层 (S3 独立复验备注: 原版分派比较 1/2/3)
 	p.growthSource = std::min(std::max(params[AF_GROWTH_SOURCE]->u.pd.value - 1, 0), 2);
-	p.blendMode    = params[AF_BLEND_MODE]->u.pd.value;     // 1-based ( 权威映射)
+	p.blendMode    = params[AF_BLEND_MODE]->u.pd.value;     // 1-based (0x3D830 权威映射)
 	// 参数身份诊断: 验证 params[ID] 与 UI 控件是否错位 (旧工程折叠组版本可能污染索引)
 	logFrame("  [param] preset=%d renderer=%d growthSource=%d (raw pd=%d id=%d) blend=%d view=%d loopFade=%.0f srcMode=%d(raw %d)",
 	       presetIdx, renderer, p.growthSource,
@@ -965,11 +1069,11 @@ readParams(PF_ParamDef* params[], dissolve::Params& p,
 	       p.blendMode, viewMode,
 	       (double)params[AF_LOOP_FADE]->u.fs_d.value,
 	       p.sourceMode, (int)params[AF_SOURCE_MODE]->u.pd.value);
-	presetIdx  = params[AF_PRESET]->u.pd.value - 2;  // 设计列表: None/Reset 前置 (32 项)
+	presetIdx  = params[AF_PRESET]->u.pd.value - 2;  // 原版列表: None/Reset 前置 (32 项)
 	renderer   = params[AF_RENDERER]->u.pd.value;
 	// 圆点笔刷 (5 点) — 旧工程参数损坏实证: 点值 = 越界垃圾 (671%/1737% 等),
 	// 且损坏的工程参数状态会使 AE 对效果实例的时间求值异常 (每帧 current_time=0)。
-	// 自愈: 越界值写回默认 45 (设计 {45,45}%) — 经 params[] change_flags 提交回 AE,
+	// 自愈: 越界值写回默认 45 (原版 {45,45}%) — 经 params[] change_flags 提交回 AE,
 	// 一次修复后工程参数恢复干净。
 	brush.enable = true;
 	brush.radius = params[AF_RADIUS]->u.fs_d.value;
@@ -992,7 +1096,7 @@ readParams(PF_ParamDef* params[], dissolve::Params& p,
 		                        : FIX_2_FLOAT(pd->u.td.y_value);
 		if (!(v >= 0.f && v <= 100.f)) {
 			float rawV = v;
-			// 渲染内修正为默认 (16.16 定点 45 = )
+			// 渲染内修正为默认 (16.16 定点 45 = 0x2D0000)
 			if (bi % 2 == 0) pd->u.td.x_value = 45 << 16;
 			else             pd->u.td.y_value = 45 << 16;
 			v = 45.f;
@@ -1008,7 +1112,7 @@ readParams(PF_ParamDef* params[], dissolve::Params& p,
 	       FIX_2_FLOAT(params[AF_POS3]->u.td.x_value), FIX_2_FLOAT(params[AF_POS3]->u.td.y_value),
 	       FIX_2_FLOAT(params[AF_POS4]->u.td.x_value), FIX_2_FLOAT(params[AF_POS4]->u.td.y_value),
 	       FIX_2_FLOAT(params[AF_POS5]->u.td.x_value), FIX_2_FLOAT(params[AF_POS5]->u.td.y_value));
-	brush.delay[0] = params[AF_DELAY]->u.sd.value;   // 0-100 帧 (设计"延迟（帧）")
+	brush.delay[0] = params[AF_DELAY]->u.sd.value;   // 0-100 帧 (原版"延迟（帧）")
 	brush.delay[1] = params[AF_DELAY2]->u.sd.value;
 	brush.delay[2] = params[AF_DELAY3]->u.sd.value;
 	brush.delay[3] = params[AF_DELAY4]->u.sd.value;
@@ -1069,9 +1173,15 @@ typedef struct {
 	int quality;
 	float speedInfluence, exposure;
 	float borderStrength;
-	int speedMapChannel;   // 0=亮度 1=Alpha (设计 2 项)
+	int speedMapChannel;   // 0=亮度 1=Alpha (原版 2 项)
 	int speedMapMode;      // 面板速度图模式索引 (0-5)
 	float blurRadius, borderExpand;
+	// 边界/桥接 (传播掩码)
+	int bridgeMode;
+	float bridgeThick;
+	// 噪波生长参数
+	float noiseScale, evolution, userOffsetX, userOffsetY, contrast;
+	int complexityL;
 	// 预设属性覆盖
 	float durOverride;
 	int repeatOverride, compositeOverride;
@@ -1131,6 +1241,14 @@ PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 	CHECKOUT_P(AF_CHANNEL, speedMapChannel, pd)
 	CHECKOUT_P(AF_BLUR_RADIUS, blurRadius, fs_d)
 	CHECKOUT_P(AF_BORDER_EXPAND, borderExpand, fs_d)
+	CHECKOUT_P(AF_BRIDGE_MODE, bridgeMode, pd)
+	CHECKOUT_P(AF_BRIDGE_THICK, bridgeThick, fs_d)
+	CHECKOUT_P(AF_NOISE_SCALE, noiseScale, fs_d)
+	CHECKOUT_P(AF_NOISE_EVOLUTION, evolution, fs_d)
+	CHECKOUT_P(AF_NOISE_OFFSET_X, userOffsetX, fs_d)
+	CHECKOUT_P(AF_NOISE_OFFSET_Y, userOffsetY, fs_d)
+	CHECKOUT_P(AF_NOISE_CONTRAST, contrast, fs_d)
+	CHECKOUT_P(AF_NOISE_COMPLEXITY, complexityL, sd)
 	CHECKOUT_P(AF_EXPOSURE, exposure, fs_d)
 	CHECKOUT_P(AF_DURATION, durOverride, fs_d)
 	CHECKOUT_P(AF_REPEAT, repeatOverride, sd)
@@ -1143,7 +1261,7 @@ PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 	CHECKOUT_P(AF_SOURCE_MODE, sourceMode, pd)
 	info->sourceMode = std::min(std::max(info->sourceMode - 1, 0), 1);  // 1-based → 0/1
 #undef CHECKOUT_P
-	// 设计预设列表: None/Reset 前置 (32 项) -> 与 readParams 偏移一致
+	// 原版预设列表: None/Reset 前置 (32 项) -> 与 readParams 偏移一致
 	info->presetIdx -= 2;
 	// 圆点笔刷 (PF_POINT 用 u.td.x_value)
 	{
@@ -1210,13 +1328,12 @@ SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra* extra
 	if (!err && input_world && output_world) {
 		// 只读 PreRender 阶段快照的参数 (不再 checkout)
 		dissolve::Params p;
-		p.noiseScale   = 1.0f;   // 内部固定 (设计面板未暴露)
-		p.scaleX       = 1.0f;
+		p.scaleX       = 1.0f;   // 内部固定 (原版面板未暴露)
 		p.scaleY       = 1.0f;
 		p.brightness   = 0.5f;
-		p.contrast     = 1.0f;
-		p.evolution    = 0.0f;
-		p.complexityL  = 4;
+		p.aspect       = 1.0f;
+		p.layerOffsetX = 0.0f;
+		p.layerOffsetY = 0.0f;
 		p.alphaThreshold = 0.5f;
 		p.quality      = info->quality;
 		p.speedMapInfluenceF = info->speedInfluence;
@@ -1229,7 +1346,16 @@ SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra* extra
 		p.speedMapScale   = 1.0f;
 		p.blurRadius      = info->blurRadius;
 		p.borderExpand    = (int)info->borderExpand;
-		p.borderInfluenceF   = info->borderStrength;
+		p.borderStrength  = std::min(std::max(info->borderStrength, 0.f), 1.f);
+		p.borderInfluenceF = 0.f;   // fill 链 borderControl 固定关 (强度语义=传播掩码)
+		p.bridgeMode      = info->bridgeMode;
+		p.bridgeThick     = (int)info->bridgeThick;
+		p.noiseScale      = info->noiseScale;
+		p.evolution       = info->evolution;
+		p.userOffsetX     = info->userOffsetX;
+		p.userOffsetY     = info->userOffsetY;
+		p.contrast        = info->contrast;
+		p.complexityL     = info->complexityL;
 		p.gammaF       = 1.0f;
 		p.exposureF    = info->exposure;
 		p.timeF        = 1.0f;

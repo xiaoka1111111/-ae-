@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
             printf("[5a] 噪波种子渲染: 内容像素=%zu/%zu\n", lit, (size_t)W*H);
             if (lit == 0) { printf("  !! 噪波种子无内容\n"); return 1; }
         }
-        // 5b. blendMode 覆盖 (1=正常,  权威映射) + speedMapMode=0
+        // 5b. blendMode 覆盖 (1=正常, 0x3D830 权威映射) + speedMapMode=0
         {
             Params p2 = p;
             p2.blendMode = 1;
@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
         }
         printf("[5] 新参数路径冒烟 OK\n");
     }
-    // 6. 实现管线渲染冒烟 (GrowthDrawCPU ): 验证实现版有合理内容输出
+    // 6. 直通管线渲染冒烟 (GrowthDrawCPU 0x18060): 验证直通版有合理内容输出
     {
         DirectFrame dfr;
         dfr.preset = &kPresets[presetIdx];
@@ -172,13 +172,13 @@ int main(int argc, char** argv) {
         float rSum = 0.f, gSum = 0.f, bSum = 0.f;
         for (size_t i = 0; i < (size_t)W*H; i++)
             if (dA[i] > 0.05f) { lit++; rSum += dR[i]; gSum += dG[i]; bSum += dB[i]; }
-        printf("[6] 实现管线: 内容像素=%zu/%zu 平均色=(%.3f,%.3f,%.3f)\n",
+        printf("[6] 直通管线: 内容像素=%zu/%zu 平均色=(%.3f,%.3f,%.3f)\n",
                lit, (size_t)W*H,
                lit ? rSum/(float)lit : 0.f,
                lit ? gSum/(float)lit : 0.f,
                lit ? bSum/(float)lit : 0.f);
-        if (lit == 0) { printf("  !! 实现管线无内容\n"); return 1; }
-        // 实现输出 PPM 可视化
+        if (lit == 0) { printf("  !! 直通管线无内容\n"); return 1; }
+        // 输出 PPM 可视化
         std::vector<float> img((size_t)W*H*3);
         for (size_t i = 0; i < (size_t)W*H; i++) {
             img[i*3+0]=dR[i]; img[i*3+1]=dG[i]; img[i*3+2]=dB[i];

@@ -159,10 +159,10 @@ void blendPixel(float* dr, float* dg, float* db, float* da,
 }
 
 // 高斯模糊 (旧 styles 路径用, 抽头稀疏化近似 — 仅 tests/renderPreset 死代码路径调用;
-// AE 实际路径用 dissolve_direct.cpp 的 gaussBlurField24F50 全抽头版 ( 实现, A 级)):
+// AE 实际路径用 dissolve_direct.cpp 的 gaussBlurField24F50 全抽头版 (0x24F50 , A 级)):
 //   权重 exp(-0.5*(x/rL)^2/0.06) (sigma=0.3), 归一化;
 //   浮点半径: r1=floor(radius), r2=r1+1, 结果按 fract(radius) 插值
-//   边界: clamp (与设计纹理 clamp-to-edge 一致)
+//   边界: clamp (与原版纹理 clamp-to-edge 一致)
 static void gaussBlurField(std::vector<float>& field, int w, int h, float radius) {
     if (radius < 0.5f) return;
     int r1 = (int)std::floor(radius);
@@ -228,11 +228,11 @@ static void autoSelectSeed(const Buffers& buf, int w, int h, int* sx, int* sy) {
     }
 }
 
-// 圆点笔刷种子掩码 (设计 shader  实现):
+// 圆点笔刷种子掩码 (原版 shader 0x140E96 ):
 //   circle(pt): uv = fragCoord - pt; sq_len = |uv|^2
 //   factor = 1 if sq_len <= sq_rad; (sq_rad-sq_len)/(sq_rad-sq_margin) if in (margin, rad]
 //   sq_margin = sq_rad + sq_fade - 2*fade*radiusF, fade=1
-//   多点多源取 max; aspectF/smallestAxisF 在设计中声明未用 (纯像素圆)
+//   多点多源取 max; aspectF/smallestAxisF 在原版中声明未用 (纯像素圆)
 void brushSeedMask(const float* pts, int n, float radiusF, int w, int h,
                    std::vector<float>& mask) {
     mask.assign((size_t)w * h, 0.f);
@@ -262,7 +262,7 @@ void brushSeedMask(const float* pts, int n, float radiusF, int w, int h,
     }
 }
 
-// BFS 多源距离场 (从种子点向外, 8 邻域, 与设计 dilate 3x3 扩张一致)
+// BFS 多源距离场 (从种子点向外, 8 邻域, 与原版 dilate 3x3 扩张一致)
 // 只在形状内 (alpha > threshold) 传播; 形状外保持极大值 (永不填充)
 static void bfsFromMask(const float* mask, int w, int h,
                         const float* srcRGBA, float alphaThresh,
@@ -300,7 +300,7 @@ static void bfsFromMask(const float* mask, int w, int h,
     *maxDistOut = maxD;
 }
 
-// BFS 单源距离场 (从种子点向外, 8 邻域, 与设计 dilate 3x3 扩张一致)
+// BFS 单源距离场 (从种子点向外, 8 邻域, 与原版 dilate 3x3 扩张一致)
 static void bfsFromSeed(int sx, int sy, int w, int h,
                         const float* srcRGBA, float alphaThresh,
                         std::vector<float>& distOut, float* maxDistOut) {
@@ -343,14 +343,14 @@ void renderPreset(const StyleFrame& fr,
     if (!fr.preset) return;
 
     // ---- 波前传播: 从种子点向外, 播放进度 = 传播帧号 ----
-    // 设计: Growth 每帧传播 1px (timeF 累加), time1 记录到达帧号;
+    // 原版: Growth 每帧传播 1px (timeF 累加), time1 记录到达帧号;
     // 层窗口 start/end = 传播帧号区间 (0-99): 波前扫过时各层按时间依次接管
     // (Looped Gradients 0-22/20-42/40-62/60-82/80-99 循环; 2 Color Stripes 橙带 30-60)
     int sx, sy;
     std::vector<float> bfsDist;
     float maxDist = 1.f;
     if (fr.seedMask) {
-        // 圆点笔刷多源传播 (设计用户放置点)
+        // 圆点笔刷多源传播 (原版用户放置点)
         bfsFromMask(fr.seedMask, w, h, srcRGBA, 0.05f, bfsDist, &maxDist);
         // 退化: 无有效种子 (点全部在形状外) -> 自动选点 (形状最深点)
         bool anySeed = false;
@@ -367,7 +367,7 @@ void renderPreset(const StyleFrame& fr,
 
     float prog = std::min(std::max(fr.progress, 0.f), 100.f);
     float p01 = prog / 100.f;  // 归一化传播进度 (0-1)
-    // 波前软边 = 1 像素 (设计 coverage 为 8x8 子像素采样, 软边 <=1px; )
+    // 波前软边 = 1 像素 (原版 coverage 为 8x8 子像素采样, 软边 <=1px; 0x142C71)
     const float SOFT = 1.f / std::max(maxDist, 1.f);
 
     // fillMap: 传播覆盖率场 (已填充=1, 未填充=0, 波前边缘平滑)
@@ -385,12 +385,12 @@ void renderPreset(const StyleFrame& fr,
         fillMap[i] = std::min(std::max(f, 0.f), 1.f);
     }
 
-    // ---- Fill_GPU 合成 (设计: fillMap 经 speedOverlay + borderControl 再进层渲染) ----
-    // speed = 源图像素速度图 (设计  内核 + 面板 Channel 参数);
+    // ---- Fill_GPU 合成 (原版: fillMap 经 speedOverlay + borderControl 再进层渲染) ----
+    // speed = 源图像素速度图 (原版 0x332C0 内核 + 面板 Channel 参数);
     // border = Sobel 边缘; 只有调用方提供 params 时应用 (nullptr = 跳过, 兼容旧调用)
     std::vector<float> fillAdj;
     if (fr.params) {
-        // 全局模糊半径 (面板 Fill > Blur Radius): 对 fillMap 高斯模糊 (设计 /)
+        // 全局模糊半径 (面板 Fill > Blur Radius): 对 fillMap 高斯模糊 (原版 0x141C21/0x142071)
         std::vector<float> fillMapBlurred;
         const float* fillIn = fillMap.data();
         if (fr.params->blurRadius > 0.5f) {
@@ -401,7 +401,7 @@ void renderPreset(const StyleFrame& fr,
         fillAdj.assign(n, 0.f);
         Buffers tmp;
         tmp.w = w; tmp.h = h;
-        // 速度图: srcRGBA 可用时按面板 Channel 从源图像素生成 (设计 );
+        // 速度图: srcRGBA 可用时按面板 Channel 从源图像素生成 (原版 0x332C0);
         // 否则缺省 = 距离场
         if (srcRGBA) {
             if (fr.params->speedMapMode <= 0) {
@@ -450,14 +450,14 @@ void renderPreset(const StyleFrame& fr,
     int nLayers = std::min(p.nLayers, 5);  // 防御: layers[5] 容量
     if (nLayers <= 0) return;
 
-    // 渲染顺序 = 预设数据顺序 (设计  层循环  按记录数组遍历, 无 order 排序;
+    // 渲染顺序 = 预设数据顺序 (原版 0x18060 层循环 0x18BC3 按记录数组遍历, 无 order 排序;
     // 后画的层覆盖先画的层 — order 字段不参与排序)
     int idx[5];
     for (int i = 0; i < nLayers; i++) idx[i] = i;
 
     for (int li = 0; li < nLayers; li++) {
         const PresetLayer& L0 = p.layers[idx[li]];
-        // 每层拷贝 stops 并按 pos 排序 (设计数据 pos 乱序, 采样需升序)
+        // 每层拷贝 stops 并按 pos 排序 (原版数据 pos 乱序, 采样需升序)
         PresetColorStop sorted[12];
         int nS = std::min(L0.nStops, 12);
         for (int s = 0; s < nS; s++) sorted[s] = L0.stops[s];
@@ -466,7 +466,7 @@ void renderPreset(const StyleFrame& fr,
                 if (sorted[b].pos < sorted[a].pos) std::swap(sorted[a], sorted[b]);
         const PresetLayer& L = L0;
 
-        // 层窗口: 传播进度区间 [start/100, end/100] (设计: 波前到达帧号区间)
+        // 层窗口: 传播进度区间 [start/100, end/100] (原版: 波前到达帧号区间)
         // 层在波前推进到 start% 时开始显现, end% 时淡出 — 播放动画
         // 上沿: 从 hi 开始淡出 (hi=99 时 100% 完全打开, 不会被软边减半)
         float lo = std::min(L.start, L.end) / 100.f;
@@ -478,7 +478,7 @@ void renderPreset(const StyleFrame& fr,
         layerR.assign(n, 0.f); layerG.assign(n, 0.f); layerB.assign(n, 0.f);
         layerA.assign(n, 0.f);
 
-        // 层填充场: fillSrc + grow 线性调制 (设计无 pow; 形态学膨胀/线性缩放依据 )
+        // 层填充场: fillSrc + grow 线性调制 (原版无 pow; 形态学膨胀/线性缩放证据 0x369D0)
         //   grow>0 = 波前提前 (膨胀方向), grow<0 = 延后; 系数 0.01 为推断 [C]
         std::vector<float> layerFill(n);
         if (L.grow != 0.f) {
@@ -492,7 +492,7 @@ void renderPreset(const StyleFrame& fr,
         } else {
             layerFill = fillSrc;
         }
-        // blur: 对填充场高斯模糊 (设计 / 输入=fillMap 单通道;
+        // blur: 对填充场高斯模糊 (原版 0x141C21/0x142071 输入=fillMap 单通道;
         // 模糊自然外扩到未填充区 = 柔光; 仅形状外保持 0)
         if (L.blur > 0.5f) {
             gaussBlurField(layerFill, w, h, L.blur * 0.1f);
@@ -504,19 +504,19 @@ void renderPreset(const StyleFrame& fr,
 
         for (size_t i = 0; i < n; i++) {
             int px = (int)(i % w), py = (int)(i / w);
-            // displace: 采样坐标置换 (设计 : dst = 四边形插值 - [C+0x68/0x6c] 位移;
+            // displace: 采样坐标置换 (原版 0x332C0: dst = 四边形插值 - [C+0x68/0x6c] 位移;
             // Noise_X/Y_Displacement 双组件 — 噪声位移后坐标采样距离场/填充场, 扭曲填充与取色)
             float ndEff = bfsDist[i] / maxDist;
             int sx2 = px, sy2 = py;
             if (L.displaceSize > 0.f && L.displace > 0.f) {
                 float nv = buf.noiseMap[i];
-                // 单通道噪声近似 X/Y 双位移 (设计双组件 [C]; 缩放系数为推断)
+                // 单通道噪声近似 X/Y 双位移 (原版双组件 [C]; 缩放系数为推断)
                 float off = (nv - 0.5f) * 2.f * L.displace * 0.01f * (L.displaceSize * 0.01f);
                 sx2 = std::min(std::max(px + (int)(off * (float)w), 0), w - 1);
                 sy2 = std::min(std::max(py + (int)(off * (float)h), 0), h - 1);
                 ndEff = std::min(bfsDist[(size_t)sy2 * w + sx2] / maxDist, 1.f);
             }
-            // 层激活 = 时间窗口 × 填充场 (blur 后柔光外扩; 扭曲采样 = 设计坐标置换)
+            // 层激活 = 时间窗口 × 填充场 (blur 后柔光外扩; 扭曲采样 = 原版坐标置换)
             float wA = win * layerFill[(size_t)sy2 * w + sx2];
             if (wA <= 0.001f) continue;
 
@@ -524,18 +524,18 @@ void renderPreset(const StyleFrame& fr,
             float wave = ndEff;
 
             // 颜色
-            // mode: 1=实色 2=渐变 3=原图显现; 0=设计无 mode 字段(缺省渐变)
+            // mode: 1=实色 2=渐变 3=原图显现; 0=原版无 mode 字段(缺省渐变)
             float cr, cg, cb, ca;
             if (L.mode == 1) {  // 实色
                 cr = L.color[0]; cg = L.color[1]; cb = L.color[2]; ca = L.color[3];
             } else if (L.mode == 2 || (L.mode == 0 && L.nStops > 0)) {  // 渐变
-                // 实证 (-速度图参数.md §2): 设计渐变描述符 stop 位置 =
+                // 实证 (速度图参数.md §2): 原版渐变描述符 stop 位置 =
                 //   ratio·param(0x16/0x17)/(divisor·rec_w/h) = 归一化层坐标 [A];
                 //   gradient_mode CPU 侧语义 = divisor 表 {1,1,2,0.5} 索引 (缩放 stop 位置),
-                //   不是取色方向 — 原"1=沿波前/2=层内进度"分支无依据 [C]
-                // 取色 pos 来源: 设计 = 归一化层坐标 (param 0x16/0x17 层内坐标, 实现无此
+                //   不是取色方向 — 原"1=沿波前/2=层内进度"分支无证据 [C]
+                // 取色 pos 来源: 原版 = 归一化层坐标 (param 0x16/0x17 层内坐标, 复刻无此
                 //   参数); 渐变颜色→填充映射函数在 GPU Fill 路径, CPU 侧未发现 [C]
-                //   实现暂以 wave 波前距离近似 pos; divisor 缩放 stop 位置待 AE 实测
+                //   复刻暂以 wave 波前距离近似 pos; divisor 缩放 stop 位置待 AE 实测
                 //   对照后接入 (改动会改变全部渐变预设视觉, 需实测验证)
                 float pos;
                 if (L.gradientMode == 2) {
@@ -564,7 +564,7 @@ void renderPreset(const StyleFrame& fr,
         // overlay_opacity
         float op = L.overlayOpacity;
 
-        // 面板"混合模式"覆盖层 blendMode ( 跳表权威映射, 1-based 值):
+        // 面板"混合模式"覆盖层 blendMode (0x3D830 跳表权威映射, 1-based 值):
         //   层自带 overlayMode != 0 时优先 (预设数据); 否则用面板参数 (默认 1=正常)
         int bm = (L.overlayMode != 0) ? L.overlayMode
                                       : (fr.params ? fr.params->blendMode : 1);

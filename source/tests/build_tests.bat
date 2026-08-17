@@ -21,7 +21,7 @@ cl /nologo /O2 /EHsc /std:c++17 /utf-8 /c /I.. debug_composite.cpp /Fodebug_comp
 link /nologo /out:debug_composite.exe debug_composite.obj dissolve_core.obj dissolve_styles.obj || goto :err
 cl /nologo /O2 /EHsc /std:c++17 /utf-8 /c /I.. test_gpu.cpp /Fotest_gpu.obj || goto :err
 cl /nologo /O2 /EHsc /std:c++17 /utf-8 /c ..\gl_renderer.cpp /Fogl_renderer.obj || goto :err
-link /nologo /out:test_gpu.exe test_gpu.obj dissolve_core.obj dissolve_styles.obj gl_renderer.obj opengl32.lib user32.lib gdi32.lib || goto :err
+link /nologo /out:test_gpu.exe test_gpu.obj dissolve_core.obj dissolve_styles.obj dissolve_direct.obj gl_renderer.obj opengl32.lib user32.lib gdi32.lib || goto :err
 cl /nologo /O2 /EHsc /std:c++17 /utf-8 /c /I.. dbg_render.cpp /Fodbg_render.obj || goto :err
 link /nologo /out:dbg_render.exe dbg_render.obj dissolve_core.obj dissolve_styles.obj dissolve_direct.obj || goto :err
 cl /nologo /O2 /EHsc /std:c++17 /utf-8 /c /I.. growth_regress.cpp /Fogrowth_regress.obj || goto :err

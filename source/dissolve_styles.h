@@ -22,12 +22,12 @@ static inline float smoothstepField(float e0, float e1, float x) {
     return t * t * (3.f - 2.f * t);
 }
 
-// 混合模式 = 设计"叠加模式"参数值 (1-based popup 值,  跳表实现)
+// 混合模式 = 原版"叠加模式"参数值 (1-based popup 值, 0x3D830 跳表)
 enum BlendMode {
     BM_NORMAL        = 1,   // PF_Xfer_IN_FRONT — src-over (默认)
     BM_MULTIPLY      = 3,   // PF_Xfer_MULTIPLY
     BM_COLOR_BURN    = 4,   // PF_Xfer_COLOR_BURN (经典: 1-(1-B)/S)
-    BM_ADD           = 6,   // PF_Xfer_ADD (设计英文 Add, 中文化显示"叠加")
+    BM_ADD           = 6,   // PF_Xfer_ADD (原版英文 Add, 中文化显示"叠加")
     BM_SCREEN        = 7,   // PF_Xfer_SCREEN
     BM_OVERLAY       = 9,   // PF_Xfer_OVERLAY
     BM_SOFT_LIGHT    = 10,  // PF_Xfer_SOFT_LIGHT
@@ -44,15 +44,15 @@ struct StyleFrame {
     float progress = 0.f;      // 0-100, 预设时间进度
     float t = 0.f;             // 归一化时间 0-1 (含 repeat 循环)
     // 可选: Fill_GPU 参数 (speedOverlay/borderControl/gamma/exposure)
-    // 设计: fillMap 在层渲染前经 speedOverlay(fill, 距离场) + borderControl(边缘)
+    // 原版: fillMap 在层渲染前经 speedOverlay(fill, 距离场) + borderControl(边缘)
     // 若为 nullptr 则跳过 Fill_GPU (行为与旧版一致)
     const Params* params = nullptr;
-    // 可选: 圆点笔刷种子掩码 (设计 , 用户放置点最多 5 个)
+    // 可选: 圆点笔刷种子掩码 (原版 0x140E96, 用户放置点最多 5 个)
     // 非空时波前从掩码>0.05 的所有点同时传播 (多源 BFS), 替代自动选点
     const float* seedMask = nullptr;
 };
 
-// 圆点笔刷种子掩码 (设计 shader  实现):
+// 圆点笔刷种子掩码 (原版 shader 0x140E96 ):
 //   pts: 2*n 的点坐标 (像素); n: 点数 (1-5); radiusF: 笔刷半径 (像素)
 //   软边: sq_len in ((r-1)^2, r^2] -> factor 线性衰减; 输出 [0,1] 掩码
 void brushSeedMask(const float* pts, int n, float radiusF, int w, int h,

@@ -52,7 +52,7 @@ int main() {
         int nL = pres.nLayers;
         std::vector<float> pts((size_t)nL*2, 0.f), th(nL, 0.f);
         for (int li = 0; li < nL; li++) {
-            // 区域中心种子 (renderWorld 当前语义; 设计 {45,45} 图层坐标待换算)
+            // 区域中心种子 (renderWorld 当前语义; 原版 {45,45} 图层坐标待换算)
             pts[(size_t)li*2+0] = (float)W * 0.5f;
             pts[(size_t)li*2+1] = (float)H * 0.5f;
             th[li] = pres.layers[li].start / 100.f;

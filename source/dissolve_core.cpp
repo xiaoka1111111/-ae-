@@ -9,7 +9,7 @@
 namespace dissolve {
 
 // ================= Stage 1: Simplex 3D =================
-// 与实现 GLSL 逐行一致 (Gustavson 实现)
+// 与还原 GLSL 逐行一致 (Gustavson 实现)
 static inline float mod289f(float x) { return x - std::floor(x * (1.0f / 289.0f)) * 289.0f; }
 static inline float permute_f(float x) {
     // mod289(((x*34.0)+10.0)*x)
@@ -244,7 +244,7 @@ void jfaDistance(const Params& p, const float* alpha, Buffers& buf, int w, int h
     buf.distField.assign(n, 0.f);
 
     // k=0 初始化: 与 GLSL 一致 — 外部像素 = 种子 (x+1)<<16 | (y+1), 1px padding;
-    // 内部像素 =  (等待传播); 内部边界像素 = 图像外种子
+    // 内部像素 = 0xFFFFFFFF (等待传播); 内部边界像素 = 图像外种子
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             float a = alpha[(size_t)y * w + x];
@@ -399,7 +399,7 @@ void growthStep(const Params& p, const Buffers& buf, int w, int h,
     }
 }
 
-// ============ Stage 5b: 时间戳重采样 (GLSL sampletime 精确实现) ============
+// ============ Stage 5b: 时间戳重采样 (GLSL sampletime 精确还原) ============
 void sampletimeResample(const float* time1, const float* cov1,
                         const float* time2, const float* cov2,
                         float xformX, float xformY,
@@ -479,7 +479,7 @@ static inline float gammaCorrect2(float v, float gammaF, float exposureF) {
 }
 
 // [旧链序已推翻, R23] 本函数的链序 speedOverlay→borderControl→gamma 是旧错误顺序;
-// 权威链序 = 模糊→gamma/exposure→speedOverlay→borderControl (fill 链 , A 级),
+// 权威链序 = 模糊→gamma/exposure→speedOverlay→borderControl (fill 链 0x16000, A 级),
 // 见 dissolve_direct.cpp renderPresetDirect。本函数仅旧 renderPreset/tests 死代码路径调用。
 void fillComposite(const Params& p, const Buffers& buf,
                    const float* fillMapIn, int w, int h, float* outFill) {
@@ -497,18 +497,18 @@ void fillComposite(const Params& p, const Buffers& buf,
         borderVal = std::max(borderVal, bridgeVal);
         float v2 = borderVal * v1 * p.borderInfluenceF + v1 * (1.f - p.borderInfluenceF);
         v2 = std::min(std::max(v2, 0.f), 1.f);
-        // gamma/exposure (设计: 独立 gamma shader , 合并于此)
+        // gamma/exposure (原版: 独立 gamma shader 0x141A21, 合并于此)
         outFill[i] = gammaCorrect2(v2, p.gammaF, p.exposureF);
     }
 }
 
-// 速度图生成 (设计 SpeedMap 内核 / 实现, 从源图像素 ARGB)
-// 实证 (-速度图参数.md §1.5-1.7):
+// 速度图生成 (原版 SpeedMap 内核 0x332C0/0x335C0 , 从源图像素 ARGB)
+// 实证 (速度图参数.md §1.5-1.7):
 //   mode = 调用方 rdx 参数 (GrowthDrawCPU 主路径 = 参数 ID 0xd, 值域 {1,2}; 无第三模式)
-//   scale = 位深常量 (8bit=255.0@, float=1.0@), 非 UI 参数
-//   主通道固定读 R 位置 (设计面板 Channel=亮度|Alpha 2 项 → 预处理后写入 R 位置:
+//   scale = 位深常量 (8bit=255.0@0x13C774, float=1.0@0x13C694), 非 UI 参数
+//   主通道固定读 R 位置 (原版面板 Channel=亮度|Alpha 2 项 → 预处理后写入 R 位置:
 //   Luma 预处理 → 内核 R·(G+B+A)/(3·scale²), Alpha 同理)
-//   channel: 0=亮度(Luma) 1=Alpha — 设计面板仅这 2 项 (-面板参数完整性.md §4.4)
+//   channel: 0=亮度(Luma) 1=Alpha — 原版面板仅这 2 项 (面板参数完整性.md §4.4)
 void speedMapFromSource(const float* srcRGBA, int w, int h, int mode, int channel,
                         float scale, std::vector<float>& speedMap) {
     speedMap.assign((size_t)w * h, 0.f);
@@ -520,19 +520,19 @@ void speedMapFromSource(const float* srcRGBA, int w, int h, int mode, int channe
         float B = srcRGBA[i*4+2], A = srcRGBA[i*4+3];
         // 主通道 (R 位置): 0=Luma (0.299/0.587/0.114 标准), 1=Alpha
         float main = (channel == 1) ? A : (0.299f*R + 0.587f*G + 0.114f*B);
-        // 其余通道固定 (G+B+A)/3 (内核 -: B·(G+R+A)/scale²/3.0)
+        // 其余通道固定 (G+B+A)/3 (内核 0x33423-0x33491: B·(G+R+A)/scale²/3.0)
         float restAvg = (G + B + A) / 3.f;
         float val;
         if (mode == 1) {
-            // main * avg(G,B,A)/scale^2 ( mode1)
+            // main * avg(G,B,A)/scale^2 (0x332C0 mode1)
             val = (main * restAvg) * invScale2;
         } else if (mode == 2) {
-            // main/scale ( mode2)
+            // main/scale (0x332C0 mode2)
             val = main * invScale;
         } else {
             val = 0.f;  // mode ∉ {1,2} → 输出恒 0 (实证, 无第三模式)
         }
-        if (val < 0.001f) val = 0.f;  // 阈值 
+        if (val < 0.001f) val = 0.f;  // 阈值 0x13C638
         val = std::min(std::max(val, 0.f), 1.f);
         speedMap[i] = val;
     }

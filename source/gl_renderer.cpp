@@ -473,7 +473,7 @@ bool renderFrame(const float* srcRGBA, int w, int h,
         std::vector<float> seedV((size_t)w*h, 0.f);
         float alphaTh = std::min(std::max(alphaThreshold, 0.01f), 0.5f);
         if (seedMask) {
-            // 种子须在形状内 (设计: 点应置于不透明区域才生效); 阈值与 CPU 一致 0.05
+            // 种子须在形状内 (原版: 点应置于不透明区域才生效); 阈值与 CPU 一致 0.05
             for (size_t i = 0; i < (size_t)w*h; i++)
                 if (seedMask[i] > 0.05f && alpha[i] > 0.05f) seedV[i] = 1.f;
         } else {
@@ -595,7 +595,7 @@ bool renderFrame(const float* srcRGBA, int w, int h,
             const PresetLayer& L = preset.layers[i];
             starts[slot] = L.start; ends[slot] = L.end; grows[slot] = L.grow;
             ops[slot] = L.overlayOpacity; modes[slot] = L.mode;
-            // 面板"混合模式"覆盖 (与 CPU renderPreset 同步;  权威映射, 1-based)
+            // 面板"混合模式"覆盖 (与 CPU renderPreset 同步; 0x3D830 权威映射, 1-based)
             int bm = (L.overlayMode != 0) ? L.overlayMode : (blendMode > 0 ? blendMode : 1);
             overlays[slot] = bm;
             nStops[slot] = L.nStops; gm[slot] = L.gradientMode;
@@ -604,7 +604,7 @@ bool renderFrame(const float* srcRGBA, int w, int h,
             blurs[slot] = 0;
             colors[slot*4+0] = L.color[0]; colors[slot*4+1] = L.color[1];
             colors[slot*4+2] = L.color[2]; colors[slot*4+3] = L.color[3];
-            // 拷贝并按 pos 排序 (设计预设数据 pos 乱序)
+            // 拷贝并按 pos 排序 (原版预设数据 pos 乱序)
             PresetColorStop sorted[12];
             int nS = std::min(L.nStops, 12);
             for (int s = 0; s < nS; s++) sorted[s] = L.stops[s];

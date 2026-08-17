@@ -14,7 +14,7 @@ static int failures = 0;
     else { printf("  [FAIL] %s\n", msg); failures++; } } while (0)
 
 int main() {
-    // 1. 圆点 splat: 软边圆公式 (-)
+    // 1. 圆点 splat: 软边圆公式 (0x19372-0x1960A)
     printf("[1] 圆点 splat:\n");
     {
         const int W = 32, H = 32;
@@ -47,7 +47,7 @@ int main() {
         CHECK(fill3[(size_t)16*W+16] == 1.f, "max 累积 (多圆重叠)");
     }
 
-    // 2. 膨胀核: 3x3 max + 满像素保留 (/)
+    // 2. 膨胀核: 3x3 max + 满像素保留 (0x369D0/0x36BB0)
     printf("[2] 膨胀核:\n");
     {
         const int W = 7, H = 7;
@@ -66,7 +66,7 @@ int main() {
         CHECK(std::fabs(out[(size_t)3*W+6] - 0.5f) < 0.001f, "2 次后 0.5 传播 2px 到 (3,6)");
     }
 
-    // 3. 斜坡内核 : out = clamp(fill·S + 0.5·S·(p−0.5) + 2.5·p − 1, 0, 1)
+    // 3. 斜坡内核 0x30B80: out = clamp(fill·S + 0.5·S·(p−0.5) + 2.5·p − 1, 0, 1)
     printf("[3] 斜坡内核 0x30B80:\n");
     {
         // S=2, fill=0.5, p=0.5: 0.5·2 + 0.5·2·0 + 1.25 − 1 = 1.25 → clamp 1.0
@@ -81,7 +81,7 @@ int main() {
         CHECK(std::fabs(v - 1.f) < 0.001f, "S=1 fill=1 p=1 → 1 (clamp 上界)");
     }
 
-    // 4. overlay+lerp : o = dst<0.5?2ds:1−2(1−d)(1−s); lerp(o,dst,w)
+    // 4. overlay+lerp 0x30E50: o = dst<0.5?2ds:1−2(1−d)(1−s); lerp(o,dst,w)
     printf("[4] overlay+lerp 0x30E50:\n");
     {
         // dst=0.25, src=0.5: o=2·0.25·0.5=0.25; w=1 → 0.25
@@ -98,7 +98,7 @@ int main() {
         CHECK(std::fabs(v - 0.25f) < 0.001f, "w=0.5 → lerp 中点");
     }
 
-    // 5. 四边形扭曲 SpeedMap (/)
+    // 5. 四边形扭曲 SpeedMap (0x332C0/0x335C0)
     printf("[5] 四边形扭曲 SpeedMap:\n");
     {
         const int SW = 4, SH = 4;
@@ -142,7 +142,7 @@ int main() {
         pres.layers[0].color[0] = 1.f; pres.layers[0].color[1] = 0.f;
         pres.layers[0].color[2] = 0.f; pres.layers[0].color[3] = 1.f;
         pres.layers[0].overlayOpacity = 100.f;
-        pres.layers[0].overlayMode = 1;  // 正常 ( 权威映射 1-based)
+        pres.layers[0].overlayMode = 1;  // 正常 (0x3D830 权威映射 1-based)
         const int W = 32, H = 32;
         DirectFrame fr;
         fr.preset = &pres;
@@ -157,7 +157,7 @@ int main() {
         std::vector<float> cR, cG, cB, cA;
         renderPresetDirect(fr, W, H, cR, cG, cB, cA);
         // p01=0.5, total=100 → frame=49; 传播半径 5 的 splat + 49 帧膨胀 ≈ 全图
-        // 中心应该被覆盖; 层色应用 (宿主颜色填充语义, 实现模拟):
+        // 中心应该被覆盖; 层色应用 (宿主颜色填充语义, 复刻模拟):
         //   mode==1 实色层 → 层色 (红)
         size_t ci = (size_t)16*W+16;
         printf("    center: R=%.2f G=%.2f B=%.2f A=%.2f\n", cR[ci], cG[ci], cB[ci], cA[ci]);
@@ -198,44 +198,71 @@ int main() {
         std::vector<float> noise((size_t)W*H, 0.5f);
         for (size_t i = 0; i < noise.size(); i++)
             noise[i] = ((i * 7) % 100) / 100.f;
-        // 源图
-        std::vector<float> src((size_t)W*H*4, 0.5f);
-        for (size_t i = 0; i < (size_t)W*H; i++) src[i*4+3] = 1.f;
-        std::vector<float> cR, cG, cB, cA;
+        // 源图 (旧 7b 语义: 灰底源图 — 新语义下种子来自源图 luma, 不再使用)
 
-        // 7a. 噪波生长: fillMap = (noise, S, p)
+        // 7a. 噪波生长 [重构 2026-08-18]: 种子 = ramp(噪声,S,p)>0.01 的像素
+        //     (噪波白区作起始点, ramp 含进度项 → 种子随生长出现), BFS 扩散
         DirectFrame fr;
         fr.preset = &pres;
         fr.progress01 = 0.5f;
         fr.rampS = 1.f;
         fr.growthSource = 1;
         fr.noiseFill = noise.data();
+        fr.totalFrames = 100.f;
+        fr.explicitFrames = 0.f;   // 未传播: 只留 ramp 阈值种子
+        std::vector<float> cR, cG, cB, cA;
         renderPresetDirect(fr, W, H, cR, cG, cB, cA);
         size_t lit = 0;
         for (size_t i = 0; i < cA.size(); i++) if (cA[i] > 0.f) lit++;
-        printf("    噪波生长: 内容像素=%zu/%zu\n", lit, (size_t)W*H);
-        CHECK(lit > (size_t)W*H / 4, "噪波生长有内容 (0x30B80 全场)");
-
-        // 7b. 图层生长: 源图灰度 × 点填充场 (画布内点 {16,16}, 传播覆盖全画布)
-        fr.growthSource = 2;
-        fr.srcRGBA = src.data();
-        fr.noiseFill = nullptr;
-        float pts2b[2] = { 16.f, 16.f };
-        float th2b[1] = { 0.f };
-        fr.layerPts = pts2b;
-        fr.layerThresh = th2b;
-        fr.explicitFrames = 100.f;  // 满进度 → 传播覆盖大部
-        fr.splatRadius = 5.f;
+        printf("    噪波种子(帧0,p=0.5): 内容像素=%zu/%zu\n", lit, (size_t)W*H);
+        // p01=0.5: ramp = noise+1.25−1 = noise+0.25 > 0.01 → 全部噪波值 (0..0.99) 都成种子
+        CHECK(lit > (size_t)W*H*3/4, "噪波种子: p=0.5 时 ramp>0.01 覆盖大部");
+        // 低进度: ramp = noise−1.1 ≤ 0 → 无种子 (噪波随生长逐步出现)
+        fr.progress01 = 0.05f;
         renderPresetDirect(fr, W, H, cR, cG, cB, cA);
         lit = 0;
         for (size_t i = 0; i < cA.size(); i++) if (cA[i] > 0.f) lit++;
-        printf("    图层生长: 内容像素=%zu/%zu\n", lit, (size_t)W*H);
-        CHECK(lit > (size_t)W*H / 2, "图层生长覆盖大部 (源图灰度 × 填充场)");
-        // straight-alpha 语义 (设计宿主 transfer_rect 合成):
-        //   层色白 straight=1.0, 覆盖 alpha≈0.5 → 最终 out = src*(1-a)+cR*a = 0.75 (在 0.5 灰底上)
-        //   (旧手动合成存预乘色 cR=0.5 是宿主语义偏差, 已随 blendPixel 实现修正)
-        CHECK(std::fabs(cR[(size_t)16*W+16] - 1.0f) < 0.05f, "图层生长中心 = 层色白 straight 1.0");
-        CHECK(std::fabs(cA[(size_t)16*W+16] - 0.5f) < 0.05f, "图层生长中心覆盖率 = 源图灰度 0.5");
+        printf("    噪波种子(帧0,p=0.05): 内容像素=%zu/%zu\n", lit, (size_t)W*H);
+        CHECK(lit == 0, "低进度无种子 (ramp 输出全 0, 一边生长一边出现)");
+        // 满帧传播: 从种子扩散覆盖全场
+        fr.progress01 = 0.5f;
+        fr.explicitFrames = 100.f;
+        renderPresetDirect(fr, W, H, cR, cG, cB, cA);
+        lit = 0;
+        for (size_t i = 0; i < cA.size(); i++) if (cA[i] > 0.f) lit++;
+        printf("    噪波生长(满帧): 内容像素=%zu/%zu\n", lit, (size_t)W*H);
+        CHECK(lit > (size_t)W*H*3/4, "噪波生长满帧覆盖大部 (BFS 从噪波种子扩散)");
+
+        // 7b. 图层生长 [重构 2026-08-18]: 种子 = 源图 luma>0.05 像素 (白区作起始点)
+        //     源图: 黑底 + 中心 9×9 白盘 → 种子=白盘, BFS 扩散
+        std::vector<float> src2((size_t)W*H*4, 0.f);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                float d = std::max(std::abs(x-16), std::abs(y-16));
+                if (d <= 4.f) {
+                    size_t i = (size_t)y*W+x;
+                    src2[i*4+0]=1.f; src2[i*4+1]=1.f; src2[i*4+2]=1.f; src2[i*4+3]=1.f;
+                }
+            }
+        fr.growthSource = 2;
+        fr.srcRGBA = src2.data();
+        fr.noiseFill = nullptr;
+        fr.progress01 = 0.5f;
+        fr.totalFrames = 100.f;
+        fr.explicitFrames = 0.f;   // 未传播: 只有白盘种子 (+1px 软边)
+        renderPresetDirect(fr, W, H, cR, cG, cB, cA);
+        lit = 0;
+        for (size_t i = 0; i < cA.size(); i++) if (cA[i] > 0.f) lit++;
+        printf("    图层种子(帧0): 内容像素=%zu (期望≈白盘 81)\n", lit);
+        CHECK(lit > 40 && lit < 200, "图层生长种子 = 源图白盘 (luma>0.05)");
+        // 满帧: 从白盘扩散覆盖全场
+        fr.explicitFrames = 100.f;
+        renderPresetDirect(fr, W, H, cR, cG, cB, cA);
+        lit = 0;
+        for (size_t i = 0; i < cA.size(); i++) if (cA[i] > 0.f) lit++;
+        printf("    图层生长(满帧): 内容像素=%zu/%zu\n", lit, (size_t)W*H);
+        CHECK(lit > (size_t)W*H*3/4, "图层生长满帧覆盖大部 (BFS 从白盘扩散)");
+        CHECK(std::fabs(cA[(size_t)16*W+16] - 1.0f) < 0.05f, "图层生长中心覆盖率 = 1 (全场填充)");
 
         // 7c. 点生长 (默认): 无 layerPts 时默认 {45,45} — 大画布验证默认点行为
         {
@@ -260,7 +287,7 @@ int main() {
         }
     }
 
-    // 8. Fill_GPU 9 步链 (): 模糊(2/3) → gamma(4) → speedOverlay(5) → borderControl(9)
+    // 8. Fill_GPU 9 步链 (0x16000): 模糊(2/3) → gamma(4) → speedOverlay(5) → borderControl(9)
     printf("[8] Fill_GPU 9 步链:\n");
     {
         const int W = 32, H = 32;
@@ -276,7 +303,7 @@ int main() {
         float pts[2] = { 16.f, 16.f };
         float th[1] = { 0.f };
 
-        // 8a. gamma/exposure (): fill 0.5 → pow(0.5,2)*1 = 0.25
+        // 8a. gamma/exposure (0x33080): fill 0.5 → pow(0.5,2)*1 = 0.25
         DirectFrame fr;
         fr.preset = &pres;
         fr.progress01 = 0.5f;
@@ -291,7 +318,7 @@ int main() {
         printf("    gamma=2: 中心 alpha=%.2f\n", cA[(size_t)16*W+16]);
         CHECK(cA[(size_t)16*W+16] > 0.9f, "gamma=2 中心 fill=1 不变");
 
-        // 8b. borderControl (): edge=1 处不变, edge=0 处乘 (1-w)
+        // 8b. borderControl (0x30170): edge=1 处不变, edge=0 处乘 (1-w)
         std::vector<float> edge((size_t)W*H, 1.f);
         edge[(size_t)16*W+16] = 0.f;
         fr.gammaF = 1.f;
@@ -302,7 +329,7 @@ int main() {
         printf("    border w=0.5, edge=0: 中心 alpha=%.2f (期望≈0.5)\n", aC);
         CHECK(aC > 0.25f && aC < 0.75f, "borderControl: dst·(1−0.5·(1−0)) = dst/2");
 
-        // 8c. 模糊 (): 仅 splat 圆盘 (explicitFrames=0, 无膨胀), 半径 3 后
+        // 8c. 模糊 (0x24F50): 仅 splat 圆盘 (explicitFrames=0, 无膨胀), 半径 3 后
         //     中心仍满、圆盘边缘外 1px 出现软边 (sigma=0.3R 极窄核, 远处仍为 0)
         fr.edgeMap = nullptr;
         fr.borderInfluenceF = 0.f;
@@ -353,9 +380,9 @@ int main() {
         CHECK(allZero, "激活掩码变化 (阈值 0.6>p01) 重算后全空");
     }
 
-    // 10. 种子在 alpha 形状外 (设计 Borders 语义回归, 2026-08-17):
+    // 10. 种子在 alpha 形状外 (原版 Borders 语义回归, 2026-08-17):
     //     点 (4,4) 远离形状 (48..60 方块) → 传播被 Alpha 边界阻断
-    //     (设计: "填充不能穿越过透明区域"; 点应置于不透明区域才生效)
+    //     (原版: "填充不能穿越过透明区域"; 点应置于不透明区域才生效)
     printf("[10] 种子在形状外 (边界阻断):\n");
     {
         const int W = 64, H = 64;
@@ -393,7 +420,7 @@ int main() {
 
     // 11. 层顺序(order)+窗口(start/end)+mode-3 源层 (2026-08-16 "黑底"修复回归):
     //     预设 0 (2 Color Stripes): 蓝(order0)→源(order1)→橙(order3 顶层, 窗口30-60)
-    //     白字内容 (用户场景): 45% → 橙条纹压在字上; 80% → 源层盖回白字 (设计 shader 语义),
+    //     白字内容 (用户场景): 45% → 橙条纹压在字上; 80% → 源层盖回白字 (原版 shader 语义),
     //     蓝色只留在透明背景 (字间空隙)
     printf("[11] order/窗口/mode-3 合成:\n");
     {
@@ -437,10 +464,93 @@ int main() {
         CHECK(r > 0.9f && g > 0.5f && g < 0.9f && b < 0.1f, "45%: 橙条纹顶层可见 (order 排序+窗口)");
         runAt(0.80f, (size_t)32*W+20, &r, &g, &b);   // 白字像素
         printf("    80%% 字中心: (%.2f,%.2f,%.2f) 期望白(源层盖回)\n", r, g, b);
-        CHECK(r > 0.9f && g > 0.9f && b > 0.9f, "80%: 源层盖回白字 (设计 shader mode-3 语义)");
+        CHECK(r > 0.9f && g > 0.9f && b > 0.9f, "80%: 源层盖回白字 (原版 shader mode-3 语义)");
         runAt(0.80f, (size_t)32*W+6, &r, &g, &b);   // 形状外透明背景 (x=6 < 8)
         printf("    80%% 形状外背景: (%.2f,%.2f,%.2f) 期望透明黑(边界阻断, 不填充)\n", r, g, b);
-        CHECK(r < 0.05f && g < 0.05f && b < 0.05f, "80%: 形状外保持透明 (设计边界阻断)");
+        CHECK(r < 0.05f && g < 0.05f && b < 0.05f, "80%: 形状外保持透明 (原版边界阻断)");
+    }
+
+    // 12. 传播掩码 (propMask, 原版 Borders/Bridges) + Speed 整步 [2026-08-18]
+    //     双竖条形状 (左 8px / 右 8px, 中 16px 空隙): 无桥接波前被空隙阻断;
+    //     膨胀掩码 (桥接) → 波前越过空隙达右条。
+    printf("[12] 传播掩码 + Speed 整步:\n");
+    {
+        const int W = 32, H = 32;
+        Preset pres;
+        pres.name = "pm-test";
+        pres.duration = 1.f; pres.repeat = 1; pres.compOverOriginal = 0;
+        pres.nLayers = 1;
+        pres.layers[0].mode = 1;
+        pres.layers[0].start = 0.f; pres.layers[0].end = 99.f;
+        pres.layers[0].color[0] = 1.f; pres.layers[0].color[1] = 1.f;
+        pres.layers[0].color[2] = 1.f; pres.layers[0].color[3] = 1.f;
+        pres.layers[0].overlayOpacity = 100.f;
+        std::vector<float> shape((size_t)W*H, 0.f);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+                if (x < 8 || x >= 24) shape[(size_t)y*W+x] = 1.f;
+        float pts[2] = { 4.f, 16.f };   // 种子在左条内
+        float th0[1] = { 0.f };
+        DirectFrame fr;
+        fr.preset = &pres;
+        fr.progress01 = 0.99f;
+        fr.totalFrames = 100.f;
+        fr.explicitFrames = 40.f;
+        fr.splatRadius = 4.f;
+        fr.growthSource = 0;
+        fr.layerPts = pts; fr.layerThresh = th0;
+        fr.shapeAlpha = shape.data();
+        std::vector<float> cR, cG, cB, cA;
+        auto countRight = [&](const std::vector<float>& A) {
+            size_t lit = 0;
+            for (int y = 0; y < H; y++)
+                for (int x = 24; x < W; x++)
+                    if (A[(size_t)y*W+x] > 0.f) lit++;
+            return lit;
+        };
+        // 12a. 无桥接: 空隙阻断 → 右条无内容
+        renderPresetDirect(fr, W, H, cR, cG, cB, cA);
+        size_t rightLit = countRight(cA);
+        size_t leftLit = 0;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < 8; x++)
+                if (cA[(size_t)y*W+x] > 0.f) leftLit++;
+        printf("    无桥接: 左条=%zu 右条=%zu\n", leftLit, rightLit);
+        CHECK(rightLit == 0, "空隙阻断: 无桥接时波前不达右条 (Borders)");
+        CHECK(leftLit > 0, "左条有生长内容");
+        // 12b. propMask = 形状膨胀 16px (桥接/弱边界) → 波前越过空隙达右条
+        std::vector<float> prop((size_t)W*H, 0.f);
+        dissolve::dilateMaxField(shape, prop, W, H, 16);
+        fr.propMask = prop.data();
+        fr.explicitFrames = 100.f;  // 满帧: 掩码内全部覆盖
+        renderPresetDirect(fr, W, H, cR, cG, cB, cA);
+        rightLit = countRight(cA);
+        size_t gapLit = 0;
+        for (int y = 0; y < H; y++)
+            for (int x = 8; x < 24; x++)
+                if (cA[(size_t)y*W+x] > 0.f) gapLit++;
+        printf("    桥接(膨胀16): 右条=%zu 空隙=%zu\n", rightLit, gapLit);
+        CHECK(rightLit > 0, "桥接掩码: 波前越过空隙达右条");
+        CHECK(gapLit > 0, "桥接掩码: 空隙区域可见填充 (溢出/桥接显示)");
+        // 12c. Speed 整步 (steps per second, 离散模拟步): floor(10.5)==10
+        fr.propMask = nullptr;
+        fr.explicitFrames = 10.f;
+        renderPresetDirect(fr, W, H, cR, cG, cB, cA);
+        std::vector<float> cA10 = cA;
+        fr.explicitFrames = 10.5f;
+        renderPresetDirect(fr, W, H, cR, cG, cB, cA);
+        bool same = true;
+        for (size_t i = 0; i < cA.size(); i++)
+            if (std::fabs(cA[i] - cA10[i]) > 1e-4f) { same = false; break; }
+        printf("    整步: 帧10.5 == 帧10: %s\n", same ? "是" : "否");
+        CHECK(same, "Speed 整步: floor(10.5)==10 → 结果一致");
+        fr.explicitFrames = 11.f;
+        renderPresetDirect(fr, W, H, cR, cG, cB, cA);
+        bool diff = false;
+        for (size_t i = 0; i < cA.size(); i++)
+            if (std::fabs(cA[i] - cA10[i]) > 1e-3f) { diff = true; break; }
+        printf("    整步: 帧11 != 帧10: %s\n", diff ? "是" : "否");
+        CHECK(diff, "Speed 整步: 帧推进改变结果");
     }
 
     printf("\n%s (%d 失败)\n", failures == 0 ? "== 全部通过 ==" : "== 有失败 ==", failures);

@@ -1,5 +1,5 @@
 // sim_black.cpp — 用户"黑底无动画"场景仿真 (预设 0 + 黑内容源 + 大世界区域渲染)
-// 实现 renderWorld 的关键路径: copyToFloat → 区域提取 → renderPresetDirect → 最终合成
+// 复刻 renderWorld 的关键路径: copyToFloat → 区域提取 → renderPresetDirect → 最终合成
 // 目的: 逐帧打印输出像素, 判定 (a) 动画是否逐帧演化 (b) 输出颜色为何黑
 #include <cstdio>
 #include <cmath>
@@ -15,7 +15,7 @@ static float hash01(int x, int y) {  // 确定性假噪声 (非关键)
 }
 
 int main() {
-    // 用户场景: 输出世界 400; extent 区域 3744x563 @ (baseX=0, baseY=0) 近似
+    // 用户场景: 输出世界 4000x4000; extent 区域 3744x563 @ (baseX=0, baseY=0) 近似
     const int W = 1000, H = 1000;          // 缩放 1/4 保持比例 (世界)
     const int rw = 936, rh = 141;          // 区域 = 3744/4 x 563/4
     const int baseX = 0, baseY = 0;

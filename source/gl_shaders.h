@@ -6,7 +6,7 @@
  */
 #pragma once
 
-// 全屏三角形顶点着色器 (与设计一致)
+// 全屏三角形顶点着色器 (与原版一致)
 static const char* kVSFullscreen =
     "#version 330\n"
     "in vec4 vertex;\n"
@@ -161,7 +161,7 @@ static const char* kJFAFS =
     "    vec2 p = gl_FragCoord.xy - vec2(0.5,0.5);\n"
     "    ivec2 c = ivec2(p);\n"
     "    ivec2 inTexSizeL = textureSize(in_tex, 0);\n"
-    "    // 传播受形状约束 (设计 Borders 语义): 填充不能穿越透明区域,\n"
+    "    // 传播受形状约束 (原版 Borders 语义): 填充不能穿越透明区域,\n"
     "    // 波前只在图层不透明区内部流动 (流体感)。\n"
     "    float shapeA = texture(alpha_tex, texCoord).r;\n"
     "    if (k == 0) {\n"
@@ -194,7 +194,7 @@ static const char* kJFAFS =
     "                frag_color = uintBitsToFloat(c_u);\n"
     "            }\n"
     "        } else if (dfModeL == 3) {\n"
-    "            // 种子传播: in_tex 是种子掩码; 种子须在形状内 (设计: 点应置于不透明区域)\n"
+    "            // 种子传播: in_tex 是种子掩码; 种子须在形状内 (原版: 点应置于不透明区域)\n"
     "            float seed = texture(in_tex, texture_offset_coords).r;\n"
     "            if (seed > 0.05 && shapeA > 0.05) {\n"
     "                uint c_u = (uint(c.x+1) << 16 | uint(c.y+1));\n"
@@ -208,7 +208,7 @@ static const char* kJFAFS =
     "        for (int j = -1; j <= 1; j += 1) {\n"
     "            ivec2 s = c + ivec2(i*k, j*k);\n"
     "            if (any(lessThan(ivec4(s, jfa_res - 1), ivec4(0, 0, s)))) continue;\n"
-    "            // 形状外 (透明区) 不传播 — 波前被 Alpha 边界阻断 (设计 Borders 语义)\n"
+    "            // 形状外 (透明区) 不传播 — 波前被 Alpha 边界阻断 (原版 Borders 语义)\n"
     "            float sa = texelFetch(alpha_tex, s, 0).r;\n"
     "            if (sa <= 0.05) continue;\n"
     "            uint c_u = floatBitsToUint(texelFetch(jfa_tex, s, 0).r);\n"
@@ -228,7 +228,7 @@ static const char* kJFAFS =
     "}\n";
 
 // ============ 距离归一化 (dist → nd; 形状外=2.0) ============
-// 传播受形状约束 (JFA 迭代跳过透明区) + fill 场形状外裁剪 — 设计 Borders 语义:
+// 传播受形状约束 (JFA 迭代跳过透明区) + fill 场形状外裁剪 — 原版 Borders 语义:
 // "填充不能穿越过透明区域"; 波前只在图层不透明区内部流动。
 static const char* kNormFS =
     "#version 330\n"
@@ -247,7 +247,7 @@ static const char* kNormFS =
     "}\n";
 
 // ============ 图层合成 (预设引擎 GPU 版) ============
-// 语义与 CPU renderPreset 一致 (设计 填充效果):
+// 语义与 CPU renderPreset 一致 (原版 原版):
 //   distTex.r = 到种子点的归一化传播距离 (0=种子点, 1=最远), 由 CPU 计算
 //   progress = 播放进度 0-100
 //   fillMap = 覆盖率场 = 1 - smoothstep(radius-SOFT, radius+SOFT, nd)
@@ -384,7 +384,7 @@ static const char* kLayersFS =
     "            else if (speedMapChannel == 2) spd = srcp.g;\n"
     "            else if (speedMapChannel == 3) spd = srcp.b;\n"
     "            else spd = srcp.a;\n"
-    "            if (spd < 0.001) spd = 0.0;   // 阈值 \n"
+    "            if (spd < 0.001) spd = 0.0;   // 阈值 0x13C638\n"
     "            spd = clamp(spd, 0.0, 1.0);\n"
     "        }\n"
     "        float ov = overlayS(fill, spd);\n"
@@ -409,7 +409,7 @@ static const char* kLayersFS =
     "        const float WB = 0.03;\n"
     "        float win = smoothstepF(lo - WB, lo + WB, p01) *\n"
     "                    (1.0 - smoothstepF(hi, hi + WB, p01));\n"
-    "        // grow: 线性调制推进 (无 pow 依据; 设计为线性缩放+膨胀核)\n"
+    "        // grow: 线性调制推进 (无 pow 证据; 原版为线性缩放+膨胀核)\n"
     "        float g = L_grow[li];\n"
     "        float fillG = fill;\n"
     "        if (g != 0.0 && fillG > 0.001) {\n"
@@ -417,7 +417,7 @@ static const char* kLayersFS =
     "            fillG = clamp(1.0 - smoothstepF(p01, p01 + softEdge, ndA), 0.0, 1.0);\n"
     "            if (fill <= 0.001) fillG = 0.0;\n"
     "        }\n"
-    "        // blur: 对填充场高斯模糊 (设计 / 输入=fillMap;\n"
+    "        // blur: 对填充场高斯模糊 (原版 0x141C21/0x142071 输入=fillMap;\n"
     "        // 模糊外扩到未填充区=柔光; 形状外 (outside) 自然为 0)\n"
     "        if (L_blur[li] > 0.5) {\n"
     "            float br = L_blur[li] * 0.1;\n"
@@ -458,7 +458,7 @@ static const char* kLayersFS =
     "        if (wA <= 0.001) continue;\n"
     "        // 波前位置 (渐变取色; grow 只影响推进不影响取色)\n"
     "        float w = nd;\n"
-    "        // displace: 采样坐标置换 (设计 : 四边形扭曲采样; Noise_X/Y_Displacement)\n"
+    "        // displace: 采样坐标置换 (原版 0x332C0: 四边形扭曲采样; Noise_X/Y_Displacement)\n"
     "        // 噪声位移后坐标重新采样距离场/填充场 — 扭曲填充与取色\n"
     "        if (L_displaceSize[li] > 0.0 && L_displace[li] > 0.0) {\n"
     "            float nv = texture(noiseTex, texCoord).r;\n"
@@ -481,7 +481,7 @@ static const char* kLayersFS =
     "            w = dnd;\n"
     "        }\n"
     "        vec4 col;\n"
-    "        // mode: 1=实色 2=渐变 3=原图; 0=设计无 mode 字段(有 stops 即渐变)\n"
+    "        // mode: 1=实色 2=渐变 3=原图; 0=原版无 mode 字段(有 stops 即渐变)\n"
     "        if (L_mode[li] == 1) col = L_color[li];\n"
     "        else if (L_mode[li] == 2 || (L_mode[li] == 0 && L_nStops[li] > 0)) {\n"
     "            float pos = w;\n"

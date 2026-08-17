@@ -49,15 +49,22 @@ struct Params {
     float  borderInfluenceF   = 0.0f;
     float  gammaF             = 1.0f;
     float  exposureF          = 1.0f;
-    int    speedMapMode       = 2;   // 速度图内核模式 (: 1=通道×其余平均, 2=单通道; 0=关闭)
-    int    speedMapChannel    = 0;   // 速度图通道 (设计面板: 0=亮度 Luma, 1=Alpha — 实证仅 2 项)
-    float  speedMapScale      = 1.0f; // 速度缩放 [C] (设计: 位深常量 8bit=255.0/float=1.0,  /)
+    int    speedMapMode       = 2;   // 速度图内核模式 (0x332C0: 1=通道×其余平均, 2=单通道; 0=关闭)
+    int    speedMapChannel    = 0;   // 速度图通道 (原版面板: 0=亮度 Luma, 1=Alpha — 实证仅 2 项)
+    float  speedMapScale      = 1.0f; // 速度缩放 [C] (原版: 位深常量 8bit=255.0/float=1.0,  0x13C774/0x13C694)
     float  blurRadius         = 0.0f; // 全局模糊半径 (面板 Fill > Blur Radius, 作用于 fillMap)
     int    borderExpand       = 0;    // 边框扩展 (面板 Borders > Border Expand, edgeMap 膨胀像素)
-    int    blendMode          = 0;    // 面板"混合模式" (设计 12 项选项表 ; 0=跟随预设)
-    int    growthSource       = 0;    // 面板"生长来源" (设计 点|噪波|图层; 0=点 1=噪波 2=图层)
+    int    blendMode          = 0;    // 面板"混合模式" (原版 12 项选项表 0x1FE350; 0=跟随预设)
+    int    growthSource       = 0;    // 面板"生长来源" (原版 点|噪波|图层; 0=点 1=噪波 2=图层)
     int    quality            = 0;    // param 6 质量 popup (完整|一半|双重) → 除数表 {1,1,2,0.5}
-    int    sourceMode         = 0;    // 文字模式 (0=设计: mode-3 源图盖顶; 1=填充覆盖文字: 跳过 mode-3 层)
+    int    sourceMode         = 0;    // 文字模式 (0=原版: mode-3 源图盖顶; 1=填充覆盖文字: 跳过 mode-3 层)
+    float  borderStrength     = 1.f;  // 边界强度 0-1 (1=强边界: 传播不越界; 低值允许溢出)
+    int    bridgeMode         = 0;    // 桥接模式 (0=无; 非 0 时自动膨胀桥: 连接相邻分离元素)
+    int    bridgeThick        = 5;    // 桥接厚度 (像素, 传播掩码额外膨胀量)
+    // 噪波生长参数 [2026-08-18]: 面板 6 控件直接映射到上方噪声场字段
+    //   (AF_NOISE_SCALE→noiseScale, AF_NOISE_EVOLUTION→evolution,
+    //    AF_NOISE_OFFSET_X/Y→userOffsetX/Y, AF_NOISE_CONTRAST→contrast,
+    //    AF_NOISE_COMPLEXITY→complexityL) — CPU/GPU 共用同一噪声管线。
 };
 
 // ---------------- 中间缓冲区 ----------------
@@ -88,10 +95,10 @@ struct Buffers {
 };
 
 // ---------------- 核心 API ----------------
-// Stage 1: Simplex 3D 噪声 (Gustavson, 与实现 GLSL 逐行一致)
+// Stage 1: Simplex 3D 噪声 (Gustavson, 与还原 GLSL 逐行一致)
 float simplex3d(float x, float y, float z);
 
-// Stage 1b: FBM 旋转八度 (rot1/rot2/rot3 与实现 GLSL 一致)
+// Stage 1b: FBM 旋转八度 (rot1/rot2/rot3 与还原 GLSL 一致)
 float fbm3d(const Params& p, float x, float y, float z);
 
 // Stage 1c: 噪声图生成 (含 UV 变换链)
@@ -115,7 +122,7 @@ void growthStep(const Params& p, const Buffers& buf, int w, int h,
 void composite(const Params& p, const Buffers& buf, const float* srcAlpha,
                int w, int h, float* outFill);
 
-// Stage 5b: 时间戳重采样 (GLSL sampletime 精确实现)
+// Stage 5b: 时间戳重采样 (GLSL sampletime 精确还原)
 //   对 time1/cov1/time2/cov2 四通道做双线性插值;
 //   关键: 未覆盖邻居 (time<1.0) 权重清零后重归一化 (防时间泄漏穿过未填充区);
 //   time 分量 max(1.0, t) 保证单调
@@ -135,17 +142,17 @@ void sampletimeResample(const float* time1, const float* cov1,
 void fillComposite(const Params& p, const Buffers& buf,
                    const float* fillMapIn, int w, int h, float* outFill);
 
-// 速度图生成 (设计 SpeedMap 逐像素内核 / 实现):
+// 速度图生成 (原版 SpeedMap 逐像素内核 0x332C0/0x335C0 ):
 //   从源图像素 ARGB 计算速度值 (非距离场!); 面板参数 Channel (截图实证 "Luma")
-//   mode1: val = B*avg(R,G,A)/scale^2  (-: (G+R+A)/scale, *B/scale, /3.0)
-//   mode2: val = B/scale               (-)
+//   mode1: val = B*avg(R,G,A)/scale^2  (0x33423-0x33491: (G+R+A)/scale, *B/scale, /3.0)
+//   mode2: val = B/scale               (0x3349D-0x334B8)
 //   channel: 0=Luma(亮度) 1=R 2=G 3=B 4=A — Luma 用 avg(R,G,B), 单通道用对应值
-//   val < 0.001 -> 0 (阈值 ); clamp [0,1]
+//   val < 0.001 -> 0 (阈值 0x13C638); clamp [0,1]
 //   scale: 速度缩放参数 (来源待确认 [C])
 void speedMapFromSource(const float* srcRGBA, int w, int h, int mode, int channel,
                         float scale, std::vector<float>& speedMap);
 
-// 便捷: 全管线单帧 (用于测试/设计)
+// 便捷: 全管线单帧 (用于测试/参考实现)
 void fullPipeline(const Params& p, const float* srcRGBA, int w, int h,
                   float* outRGBA, Buffers& scratch);
 

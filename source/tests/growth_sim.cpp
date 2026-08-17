@@ -35,7 +35,7 @@ int main() {
     int sx = 80, sy = 80;
 
     // ---- A) 跨帧 growthStep: 首帧 fill = 种子圆 (半径 3), 每帧 +1px ----
-    // 模拟设计: fillTex 初始 = 种子掩码, Growth 每帧用 8x8 覆盖率推进
+    // 模拟原版: fillTex 初始 = 种子掩码, Growth 每帧用 8x8 覆盖率推进
     // growthStep 的 fill 输入是 fillMap (buf.fillMap) — 用当前 fill 场
     std::vector<float> time1((size_t)W*H, 0.f), cov1((size_t)W*H, 0.f);
     std::vector<float> time2((size_t)W*H, 0.f), cov2((size_t)W*H, 0.f);
@@ -49,7 +49,7 @@ int main() {
         }
     p.timeF = 1.f;
     p.numSamples = 8;
-    printf("== 跨帧 growthStep 模拟 (fill 每帧 dilate 1px, 设计 0x144801) ==\n");
+    printf("== 跨帧 growthStep 模拟 (fill 每帧 dilate 1px, 原版 0x144801) ==\n");
     float covAt = 0.f;
     std::vector<float> covFrames;
     for (int frame = 0; frame <= 120; frame++) {
@@ -87,7 +87,7 @@ int main() {
     printf("  growthStep 40帧=%.3f 80帧=%.3f\n", covFrames[0], covFrames[1]);
 
     // ---- B) BFS 单帧近似: fill = 1-smoothstep(p01, p01+SOFT, nd) ----
-    // BFS 从中心传播 (实现 renderPreset 逻辑)
+    // BFS 从中心传播 (复刻 renderPreset 逻辑)
     std::vector<float> bfs((size_t)W*H, 1e9f);
     std::vector<int> qx, qy;
     bfs[(size_t)sy*W+sx] = 0.f; qx.push_back(sx); qy.push_back(sy);
