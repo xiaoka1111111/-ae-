@@ -221,13 +221,20 @@ int main() {
                     }
                 }
             diff3 /= cnt3; diffA /= cntA;
-            printf("    Fire Wave 全图平均差=%.4f, 形状内 alpha 平均差=%.4f\n", diff3, diffA);
-            // 容差说明: 已知差异源 — ① CPU 直通管线波前软边为 1px 线性,
-            //   GPU shader 用 smoothstep (更接近设计 shader 语义); ② 层 blur 在
-            //   CPU 侧未消费 (GPU 同步禁用); ③ 剪影族浮点误差。距离场本身已
-            //   验证与理论切比雪夫完全一致 (0.0000)。
+            // 形状外单独统计 (真正验证"形状外干净")
+            double outErr = 0; int cntO = 0;
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++) {
+                    size_t i = (size_t)y*W+x;
+                    if (src[i*4+3] <= 0.5f) { outErr += std::fabs(cA3[i] - gout3[i*4+3]); cntO++; }
+                }
+            outErr /= std::max(cntO, 1);
+            printf("    Fire Wave 全图平均差=%.4f, 形状内 alpha 平均差=%.4f, 形状外平均差=%.4f\n",
+                   diff3, diffA, outErr);
+            // 形状外语义: 传播无掩码但显示裁剪 (outside) — 形状外两边都应为 0;
+            // 形状内差异为软边 (CPU 1px 线性 vs GPU smoothstep) 与剪影浮点累积
             CHECK(diffA < 0.35f, "形状内 alpha 平均差 < 0.35 (软边/浮点累积差)");
-            CHECK(diff3 < 0.12f, "全图平均差 < 0.12 (形状外含填充内容)");
+            CHECK(outErr < 0.01f, "形状外平均差 < 0.01 (形状外干净)");
         }
     }
 

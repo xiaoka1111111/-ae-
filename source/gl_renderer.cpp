@@ -556,10 +556,7 @@ bool renderFrame(const float* srcRGBA, int w, int h,
     pglActiveTexture(GL_TEXTURE3);
     pglBindTexture(GL_TEXTURE_2D, g_texEdge);
     pglUniform1i(U(g_progLayers, "edgeTex"), 3);
-    pglActiveTexture(GL_TEXTURE4);
-    pglBindTexture(GL_TEXTURE_2D, g_texAlpha);
-    pglUniform1i(U(g_progLayers, "alphaTex"), 4);
-    // Fill_GPU 参数 (设计: speedOverlay + borderControl + gamma/exposure)
+    // Fill_GPU 参数 (speedOverlay + borderControl + gamma/exposure)
     pglUniform1f(U(g_progLayers, "speedMapInfluenceF"), speedInfluence);
     pglUniform1f(U(g_progLayers, "borderInfluenceF"), borderInfluence);
     pglUniform1f(U(g_progLayers, "gammaF"), gamma);

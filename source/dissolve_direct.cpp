@@ -350,9 +350,11 @@ void renderPresetDirect(const DirectFrame& fr, int w, int h,
         float framePx = minD + (maxD - minD) * k;
         for (size_t i = 0; i < n; i++) {
             if (dist[i] >= 1e8f) continue;
-            // 不按 shapeAlpha 裁剪: 设计 splat/膨胀核均无掩码 (A 级), 填充覆盖整个
-            // 图层区域 (含透明背景) — 波前洪水扫过整个区域 = "演化动画"本体;
-            // 文字形状的可见性由 mode-3 源层与最终合成保证。
+            // 形状外显示裁剪 [修正 2026-08-17]: 传播无掩码 (BFS 全区域, 波前可穿过
+            // 形状边界), 但填充显示裁剪到图层不透明区 — 与 GPU shader 的
+            // outside 标记语义一致 (设计: 形状外 fill=0)。未裁剪时填充覆盖整个
+            // 矩形区域 — 观感为"方块在文字上生长"而非"文字的生长" (用户实证)。
+            if (mask && mask[i] <= 0.05f) { baseFill[i] = 0.f; continue; }
             if (dist[i] <= framePx) baseFill[i] = 1.f;
             else if (dist[i] <= framePx + 1.f)
                 baseFill[i] = std::max(0.f, 1.f - (dist[i] - framePx));  // 1 帧软边 [B]
