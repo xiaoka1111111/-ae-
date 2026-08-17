@@ -145,23 +145,37 @@ int main() {
     // 5. mode=3 原图显现层 GPU 采样验证 (Soft Shadow @50%: 波前从中心种子向外)
     printf("[5] mode=3 源图采样 (Soft Shadow @50%%):\n");
     {
-        // 用 CPU 参考输出对比 (设计语义: 种子在形状内部, 波前向外推进)
-        Params p2;
-        Buffers buf2;
-        std::vector<float> alpha2((size_t)W*H);
-        for (size_t i = 0; i < (size_t)W*H; i++) alpha2[i] = src[i*4+3];
-        generateNoiseMap(p2, buf2, W, H);
-        jfaDistance(p2, alpha2.data(), buf2, W, H);
-        StyleFrame fr2;
+        // CPU 参考 = 直通管线 renderPresetDirect (与 GPU 同 order 层序/切比雪夫度量)
+        DirectFrame fr2;
         fr2.preset = &kPresets[29];  // Soft Shadow
-        fr2.progress = 50.f;
-        fr2.params = &p2;  // Fill_GPU 与 GPU 一致
+        fr2.progress01 = 0.5f;
+        fr2.totalFrames = kPresets[29].duration * 30.f;
+        fr2.explicitFrames = 0.5f * kPresets[29].duration * 30.f;
+        fr2.splatRadius = 10.f;
+        fr2.rampS = 1.f;
+        fr2.srcRGBA = src.data();
+        std::vector<float> sha2((size_t)W*H);
+        for (size_t i = 0; i < (size_t)W*H; i++) sha2[i] = src[i*4+3];
+        fr2.shapeAlpha = sha2.data();
+        int nL2 = std::min(kPresets[29].nLayers, 5);
+        std::vector<float> pts2((size_t)nL2*2, 0.f), th2(nL2, 0.f);
+        for (int li = 0; li < nL2; li++) { pts2[(size_t)li*2+0] = 45.f; pts2[(size_t)li*2+1] = 45.f; th2[li] = 0.f; }
+        fr2.layerPts = pts2.data();
+        fr2.layerThresh = th2.data();
+        fr2.growthSource = 0;
         std::vector<float> cR2, cG2, cB2, cA2;
-        renderPreset(fr2, buf2, src.data(), W, H, cR2, cG2, cB2, cA2);
+        renderPresetDirect(fr2, W, H, cR2, cG2, cB2, cA2);
 
         std::vector<float> gout;
+        // 与 CPU 参考同源种子掩码 (45%×96=43,43)
+        std::vector<float> sm2((size_t)W*H, 0.f);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                float dx = x - 43.f, dy = y - 43.f;
+                if (dx*dx + dy*dy <= 100.f) sm2[(size_t)y*W+x] = 1.f;
+            }
         glr::renderFrame(src.data(), W, H, kPresets[29], 50.f,
-                         noiseParams, 4, 0.5f, 0.5f, 0.f, 1.f, 1.f, 0, gout);
+                         noiseParams, 4, 0.5f, 0.5f, 0.f, 1.f, 1.f, 0, gout, sm2.data());
         size_t ci = (size_t)48*W+48;
         // GPU 输出为预乘色: 比较 GPU vs CPU 层色预乘 alpha
         CHECK(std::fabs(gout[ci*4+3] - cA2[ci]) < 0.1f,

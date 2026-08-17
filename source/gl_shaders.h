@@ -146,6 +146,7 @@ static const char* kJFAFS =
     "in vec2 texCoord;\n"
     "uniform sampler2D in_tex;\n"
     "uniform sampler2D jfa_tex;\n"
+    "uniform sampler2D alpha_tex;\n"
     "uniform vec2 jfa_res;\n"
     "uniform float alpha_threshold;\n"
     "uniform int k;\n"
@@ -160,6 +161,9 @@ static const char* kJFAFS =
     "    vec2 p = gl_FragCoord.xy - vec2(0.5,0.5);\n"
     "    ivec2 c = ivec2(p);\n"
     "    ivec2 inTexSizeL = textureSize(in_tex, 0);\n"
+    "    // 传播受形状约束 (设计 Borders 语义): 填充不能穿越透明区域,\n"
+    "    // 波前只在图层不透明区内部流动 (流体感)。\n"
+    "    float shapeA = texture(alpha_tex, texCoord).r;\n"
     "    if (k == 0) {\n"
     "        vec2 texture_offset_coords = texCoord;\n"
     "        float alpha = texture(in_tex, texture_offset_coords).r;\n"
@@ -190,9 +194,9 @@ static const char* kJFAFS =
     "                frag_color = uintBitsToFloat(c_u);\n"
     "            }\n"
     "        } else if (dfModeL == 3) {\n"
-    "            // 种子传播: in_tex 是种子掩码, 值>0 的像素编码自身坐标\n"
+    "            // 种子传播: in_tex 是种子掩码; 种子须在形状内 (设计: 点应置于不透明区域)\n"
     "            float seed = texture(in_tex, texture_offset_coords).r;\n"
-    "            if (seed > 0.05) {\n"
+    "            if (seed > 0.05 && shapeA > 0.05) {\n"
     "                uint c_u = (uint(c.x+1) << 16 | uint(c.y+1));\n"
     "                frag_color = uintBitsToFloat(c_u);\n"
     "            }\n"
@@ -204,6 +208,9 @@ static const char* kJFAFS =
     "        for (int j = -1; j <= 1; j += 1) {\n"
     "            ivec2 s = c + ivec2(i*k, j*k);\n"
     "            if (any(lessThan(ivec4(s, jfa_res - 1), ivec4(0, 0, s)))) continue;\n"
+    "            // 形状外 (透明区) 不传播 — 波前被 Alpha 边界阻断 (设计 Borders 语义)\n"
+    "            float sa = texelFetch(alpha_tex, s, 0).r;\n"
+    "            if (sa <= 0.05) continue;\n"
     "            uint c_u = floatBitsToUint(texelFetch(jfa_tex, s, 0).r);\n"
     "            if (c_u == uint(0xffffffff)) continue;\n"
     "            vec2 q = vec2(uint(c_u >> 16), uint(c_u & uint(0x0000ffff))) - vec2(1,1);\n"
@@ -221,8 +228,8 @@ static const char* kJFAFS =
     "}\n";
 
 // ============ 距离归一化 (dist → nd; 形状外=2.0) ============
-// 传播无掩码 (波前可穿过形状边界), 但 fill 场在形状外裁剪为 0 (outside 标记) —
-// 与 CPU 直通管线的形状外显示裁剪一致: 填充只显示在图层不透明区。
+// 传播受形状约束 (JFA 迭代跳过透明区) + fill 场形状外裁剪 — 设计 Borders 语义:
+// "填充不能穿越过透明区域"; 波前只在图层不透明区内部流动。
 static const char* kNormFS =
     "#version 330\n"
     "out float frag_color;\n"

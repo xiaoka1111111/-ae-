@@ -445,6 +445,9 @@ bool renderFrame(const float* srcRGBA, int w, int h,
         pglActiveTexture(GL_TEXTURE0);
         pglBindTexture(GL_TEXTURE_2D, g_texAlpha);
         pglUniform1i(U(g_progJFA, "in_tex"), 0);
+        pglActiveTexture(GL_TEXTURE2);
+        pglBindTexture(GL_TEXTURE_2D, g_texAlpha);
+        pglUniform1i(U(g_progJFA, "alpha_tex"), 2);
         pglUniform2f(U(g_progJFA, "jfa_res"), (float)w, (float)h);
         pglUniform1f(U(g_progJFA, "alpha_threshold"), alphaThreshold);
         pglUniform1i(U(g_progJFA, "dfModeL"), 1);
@@ -470,8 +473,9 @@ bool renderFrame(const float* srcRGBA, int w, int h,
         std::vector<float> seedV((size_t)w*h, 0.f);
         float alphaTh = std::min(std::max(alphaThreshold, 0.01f), 0.5f);
         if (seedMask) {
+            // 种子须在形状内 (设计: 点应置于不透明区域才生效); 阈值与 CPU 一致 0.05
             for (size_t i = 0; i < (size_t)w*h; i++)
-                if (seedMask[i] > 0.05f && alpha[i] > alphaTh) seedV[i] = 1.f;
+                if (seedMask[i] > 0.05f && alpha[i] > 0.05f) seedV[i] = 1.f;
         } else {
             // 自动选点: 读回边缘距离场 (上段 JFA 结果在 g_texJFA[cur]) 找最深点
             pglBindFramebuffer(GL_FRAMEBUFFER, g_fbo);
@@ -496,6 +500,9 @@ bool renderFrame(const float* srcRGBA, int w, int h,
         pglActiveTexture(GL_TEXTURE0);
         pglBindTexture(GL_TEXTURE_2D, g_texSeed);
         pglUniform1i(U(g_progJFA, "in_tex"), 0);
+        pglActiveTexture(GL_TEXTURE2);
+        pglBindTexture(GL_TEXTURE_2D, g_texAlpha);
+        pglUniform1i(U(g_progJFA, "alpha_tex"), 2);
         pglUniform2f(U(g_progJFA, "jfa_res"), (float)w, (float)h);
         pglUniform1f(U(g_progJFA, "alpha_threshold"), alphaThreshold);
         pglUniform1i(U(g_progJFA, "dfModeL"), 3);

@@ -307,18 +307,18 @@ void renderPresetDirect(const DirectFrame& fr, int w, int h,
             std::vector<float> splatSeed(n, 0.f);
             const float divs = std::max(fr.divisor, 0.001f);
             for (int li = 0; li < nLayers; li++) {
-                if (thresh[li] > p01) continue;  // 硬阈值: 延迟 > 进度 → 跳过 ()
-                // 设计: cx = x×2⁻¹⁶÷除数 − ox; r = 半径÷除数 (- / 0x195xx, A 级)
+                if (thresh[li] > p01) continue;  // 硬阈值: 延迟 > 进度 → 跳过
                 float p2[2] = { pts[(size_t)li*2+0] / divs, pts[(size_t)li*2+1] / divs };
                 splatFillMap(p2, &thresh[li], 1, fr.splatRadius / divs, p01,
                              w, h, fr.ox, fr.oy, splatSeed);
             }
-              // 传播域与形状裁剪解耦:
-              //   splat 点可能在 alpha 形状外 (默认点 45,45 常落在内容包围盒外),
-              //   若 BFS 也按 shapeAlpha 剔除, 种子会被整体丢弃 → fillMap 全 0。
-              //   设计点从任意位置向内容传播, 最终只在图层不透明区可见,
-              //   因此 BFS 在全渲染区域进行, 形状裁剪放在 baseFill 输出阶段。
-            bfsChebyshev(splatSeed, w, h, dist, nullptr);
+            // 传播受形状约束 [修正 2026-08-17]: 设计语义 — "填充不能穿越过透明区域,
+            // 半透明区域限制填充流动, 完全透明区域视为阻断" (Borders & Bridges)。
+            // 波前在图层不透明区内部流动 (流体感); 全区域传播+显示裁剪会直线穿过
+            // 空隙, 观感为"方块扫过"而非"形状内生长" (用户实证)。
+            // 种子位于形状外时传播被阻断 (设计: 点应置于不透明区域才生效)。
+            const float* mask = fr.shapeAlpha;
+            bfsChebyshev(splatSeed, w, h, dist, mask, 0.05f);
             if (key) {
                 std::lock_guard<std::mutex> lk(g_chebMutex);
                 g_chebCache[key] = { (int)n, dist };
